@@ -1,0 +1,36 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 2. Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      # 4. Run tests (если будут)
+      - name: Run tests
+        run: echo "No tests yet"
+
+      # 5. Build Docker image
+      - name: Build Docker image
+        run: |
+          docker build -t microclimate .
