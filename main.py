@@ -80,6 +80,33 @@ def get_history(sensor_id: int = None, db: Session = Depends(get_db)):
     # Берем последние 100 записей
     return query.order_by(models.Measurement.timestamp.desc()).limit(100).all()
 
+# --- ДОБАВЛЯЕМ ЭНДПОИНТ ДЛЯ ЗАПИСИ НОВЫХ ПОКАЗАТЕЛЕЙ ---
+
+@app.post("/api/measurements", status_code=status.HTTP_201_CREATED)
+def record_measurement(
+    measurement: schemas.MeasurementCreate, 
+    db: Session = Depends(get_db)
+):
+    """Принимает новое измерение от скрипта-имитатора и записывает в базу."""
+    
+    # 1. Проверяем, существует ли указанный датчик
+    sensor = db.query(models.Sensor).filter(models.Sensor.id == measurement.sensor_id).first()
+    if not sensor:
+        raise HTTPException(status_code=404, detail="Sensor not found")
+        
+    # 2. Создаем запись измерения
+    # Используем данные из схемы: value, sensor_id. Timestamp генерируется базой.
+    db_measurement = models.Measurement(
+        sensor_id=measurement.sensor_id, 
+        location_id=sensor.location_id, # Берем ID локации из объекта Sensor
+        value=measurement.value,
+        timestamp=datetime.utcnow()
+    )
+    
+    db.add(db_measurement)
+    db.commit()
+    return {"status": "recorded", "value": measurement.value}
+
 # --- 3. ЭКРАН "ПОЛЬЗОВАТЕЛИ" ---
 
 @app.get("/api/users", response_model=List[schemas.UserRead])

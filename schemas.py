@@ -56,15 +56,15 @@ class SensorRead(SensorBase):
 
 class MeasurementBase(BaseModel):
     value: float
-    timestamp: datetime
 
-class MeasurementCreate(MeasurementBase):
+class MeasurementCreate(BaseModel):
+    value: float
     sensor_id: int
 
-class MeasurementRead(MeasurementBase):
+class MeasurementRead(BaseModel):
     id: int
-    # Мы не вкладываем сюда полный объект Sensor, чтобы не перегружать ответ,
-    # но при желании можно добавить
+    value: float
+    timestamp: datetime
     sensor_id: int
 
     class Config:
