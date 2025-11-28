@@ -6,7 +6,7 @@ from datetime import datetime
 # --- КОНФИГУРАЦИЯ ---
 BASE_URL = "http://localhost:8000"
 ENDPOINT = "/api/measurements"
-INTERVAL_SECONDS = 5  # Интервал отправки данных (раз в 5 секунд)
+INTERVAL_SECONDS = 30 
 
 # ID ДАТЧИКОВ (должны совпадать с теми, что вы создали через /api/seed_data)
 # Если вы запустили /api/seed_data, то:
