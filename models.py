@@ -99,6 +99,10 @@ class Notification(Base):
     description = Column(String)
     is_completed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    location_id = Column(Integer, ForeignKey("locations.id"), nullable=True) # Добавлено
+    sensor_id = Column(Integer, ForeignKey("sensors.id"), nullable=True)     # Добавлено
+
+    location = relationship("Location")
 
 # --- 5. ОТЧЕТЫ (Скрин 3) ---
 

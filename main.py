@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from datetime import datetime, timedelta
 import random # Для генерации тестовых данных
-
+import crud # Импортируем наш новый файл
 # Импортируем наши обновленные файлы
 import models
 import schemas
@@ -22,51 +22,56 @@ def get_db():
     finally:
         db.close()
 
+@app.get("/api/locations", response_model=List[schemas.LocationRead])
+def get_locations(db: Session = Depends(get_db)):
+    """Получить список всех локаций (кабинетов) для выпадающего списка."""
+    return crud.get_all_locations(db)
+
 # --- 1. ЭКРАН "ДАТЧИКИ" (Список и управление) ---
 
-@app.get("/api/sensors", response_model=List[schemas.SensorRead])
-def get_sensors(db: Session = Depends(get_db)):
-    """Получить список всех датчиков с их текущим статусом"""
-    sensors = db.query(models.Sensor).all()
+# [ИСПРАВЛЕНО] Старая функция get_sensors удаляется/заменяется на эту
+@app.get("/api/sensors/{location_id}", response_model=List[schemas.SensorRead])
+def get_sensors_by_location_id(location_id: int, db: Session = Depends(get_db)):
+    """Получить список всех датчиков в конкретной локации (кабинете)."""
     
-
+    sensors = crud.get_sensors_by_location(db, location_id)
+    
+    # Заполняем вычисляемое поле last_value
+    result = []
     for sensor in sensors:
-        last_measure = db.query(models.Measurement)\
-            .filter(models.Measurement.sensor_id == sensor.id)\
-            .order_by(models.Measurement.timestamp.desc())\
-            .first()
-        sensor.last_value = last_measure.value if last_measure else 0.0
+        last_measure = crud.get_last_measurement(db, sensor.id)
         
-    return sensors
+        # Создаем экземпляр Pydantic, вручную заполняя last_value
+        sensor_data = schemas.SensorRead.from_orm(sensor)
+        sensor_data.last_value = last_measure.value if last_measure else 0.0
+        result.append(sensor_data)
+        
+    return result
+
+# ... (update_sensor_settings остается почти без изменений) ...
 
 @app.patch("/api/sensors/{sensor_id}", response_model=schemas.SensorRead)
 def update_sensor_settings(sensor_id: int, update_data: schemas.SensorUpdate, db: Session = Depends(get_db)):
     """
-    Управление датчиком:
-    - Включение/Выключение (is_active)
-    - Изменение целевой температуры (target_value)
+    Управление датчиком: Включение/Выключение, Изменение целевого значения.
     """
     sensor = db.query(models.Sensor).filter(models.Sensor.id == sensor_id).first()
     if not sensor:
         raise HTTPException(status_code=404, detail="Sensor not found")
     
-    # Обновляем только те поля, которые пришли
-    if update_data.is_active is not None:
-        sensor.is_active = update_data.is_active
-    if update_data.target_value is not None:
-        sensor.target_value = update_data.target_value
+    # ... (логика обновления данных) ...
         
     db.commit()
     db.refresh(sensor)
     
-    # Добавляем last_value для корректного ответа по схеме
-    last_measure = db.query(models.Measurement)\
-        .filter(models.Measurement.sensor_id == sensor.id)\
-        .order_by(models.Measurement.timestamp.desc())\
-        .first()
-    sensor.last_value = last_measure.value if last_measure else 0.0
+    # [Улучшено] Используем CRUD-функцию для получения последнего измерения
+    last_measure = crud.get_last_measurement(db, sensor.id)
+
+    # Создаем Pydantic схему для ответа, чтобы добавить last_value
+    updated_sensor = schemas.SensorRead.from_orm(sensor)
+    updated_sensor.last_value = last_measure.value if last_measure else 0.0
     
-    return sensor
+    return updated_sensor
 
 # --- 2. ЭКРАН "АНАЛИЗ" (Графики) ---
 
@@ -109,18 +114,17 @@ def record_measurement(
 
 # --- 3. ЭКРАН "ПОЛЬЗОВАТЕЛИ" ---
 
-@app.get("/api/users", response_model=List[schemas.UserRead])
+# ВАЖНО: response_model изменен на UserListDTO
+@app.get("/api/users", response_model=List[schemas.UserListDTO])
 def get_users(db: Session = Depends(get_db)):
-    return db.query(models.User).all()
+    """Возвращает список пользователей, отформатированный для UI"""
+    return crud.get_users_for_ui(db)
 
-@app.get("/api/logs", response_model=List[schemas.ActionLogRead])
-def get_logs(db: Session = Depends(get_db)):
-    """История входа"""
-    logs = db.query(models.ActionLog).order_by(models.ActionLog.timestamp.desc()).limit(20).all()
-    # Обогащаем именем пользователя
-    for log in logs:
-        log.user_name = log.user.full_name if log.user else "Unknown"
-    return logs
+# ВАЖНО: response_model изменен на ActionLogDTO
+@app.get("/api/logs", response_model=List[schemas.ActionLogDTO])
+def get_logs(limit: int = 20, db: Session = Depends(get_db)):
+    """История действий, отформатированная для UI"""
+    return crud.get_logs_for_ui(db, limit=limit)
 
 # --- 4. ЭКРАН "ГЛАВНАЯ" (Уведомления) ---
 
@@ -170,3 +174,11 @@ def seed_database(db: Session = Depends(get_db)):
     
     db.commit()
     return {"message": "Database seeded!"}
+
+# Добавили response_model=List[schemas.ChartPoint] для валидации
+@app.get("/analytics/{sensor_id}", response_model=List[schemas.ChartPoint])
+def read_analytics(sensor_id: int, days: int = 7, db: Session = Depends(get_db)):
+    stats = crud.get_analytics_daily(db=db, sensor_id=sensor_id, days=days)
+    if not stats:
+        return []
+    return stats
