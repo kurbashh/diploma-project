@@ -8,10 +8,10 @@ import random
 import crud
 import models
 import schemas
-from database import SessionLocal, engine
+from database import SessionLocal, engine # Убедитесь, что engine корректно импортируется
 
 # Создаем таблицы (если их нет)
-models.Base.metadata.create_all(bind=engine)
+# models.Base.metadata.create_all(bind=engine) <--- УДАЛЕНО
 
 app = FastAPI(title="Microclimate Monitoring API")
 
@@ -30,6 +30,8 @@ def get_db():
 @app.get("/api/locations", response_model=List[schemas.LocationRead])
 def get_locations(db: Session = Depends(get_db)):
     """Получить список всех локаций (кабинетов) для выпадающего списка."""
+    # Обращение к CRUD: Если CRUD импортирует models, и models импортирует database,
+    # то импорт CRUD здесь должен работать.
     return crud.get_all_locations(db)
 
 @app.get("/api/sensors/{location_id}", response_model=List[schemas.SensorRead])
@@ -287,7 +289,7 @@ def record_measurement(
         raise HTTPException(status_code=404, detail="Sensor not found")
         
     db_measurement = models.Measurement(
-        sensor_id=measurement.sensor_id, 
+        sensor_id=sensor.id, 
         location_id=sensor.location_id,
         value=measurement.value,
         timestamp=datetime.utcnow()
