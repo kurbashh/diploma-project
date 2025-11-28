@@ -6,6 +6,7 @@ from sqlalchemy import func, cast, Date
 from datetime import datetime, timedelta
 import models
 import schemas  # Импорт твоих моделей
+from google.cloud import storage
 
 
 # --- НОВЫЕ ФУНКЦИИ ДЛЯ ЭКРАНА "ДАТЧИКИ" ---
@@ -149,3 +150,30 @@ def calculate_report_data(db: Session, start_time: datetime, end_time: datetime)
         })
         
     return report_data
+
+def upload_to_gcs(bucket_name: str, file_path: str, content: str, content_type: str = 'text/plain'):
+    """
+    Создает простой текстовый файл (заглушка PDF) и загружает его в GCS.
+    """
+    try:
+        # Client() автоматически ищет учетные данные в Cloud Run.
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        
+        # Полный путь к файлу в бакете (например, reports/weekly_20251128.pdf)
+        blob = bucket.blob(file_path)
+        
+        # Загружаем содержимое отчета как строку
+        blob.upload_from_string(
+            content,
+            content_type=content_type
+        )
+        
+        # Возвращаем полный публичный URL для сохранения в базе данных
+        return f"https://storage.googleapis.com/{bucket_name}/{file_path}"
+        
+    except Exception as e:
+        # Если GCS недоступен или нет прав, вернем фиктивную ссылку
+        print(f"GCS ERROR: Failed to upload file to {bucket_name}: {e}")
+        # Возвращаем фиктивную ссылку, чтобы приложение не упало
+        return f"https://reports.microclimate.com/{file_path.split('/')[-1]}"

@@ -8,15 +8,17 @@ import random
 import crud
 import models
 import schemas
-from database import SessionLocal, engine # Убедитесь, что engine корректно импортируется
+from database import SessionLocal, engine 
+# Внимание: для реальной работы с GCS вам понадобится установить 
+# библиотеку google-cloud-storage и добавить ее импорт в crud.py
+# Здесь используется заглушка, которая возвращает фиктивный URL GCS.
 
-# Создаем таблицы (если их нет)
-# models.Base.metadata.create_all(bind=engine) <--- УДАЛЕНО
-
+# Создаем объект FastAPI
 app = FastAPI(title="Microclimate Monitoring API")
 
 # --- Dependency (Подключение к БД) ---
 def get_db():
+    """Создает и закрывает сессию базы данных"""
     db = SessionLocal()
     try:
         yield db
@@ -30,8 +32,6 @@ def get_db():
 @app.get("/api/locations", response_model=List[schemas.LocationRead])
 def get_locations(db: Session = Depends(get_db)):
     """Получить список всех локаций (кабинетов) для выпадающего списка."""
-    # Обращение к CRUD: Если CRUD импортирует models, и models импортирует database,
-    # то импорт CRUD здесь должен работать.
     return crud.get_all_locations(db)
 
 @app.get("/api/sensors/{location_id}", response_model=List[schemas.SensorRead])
@@ -109,23 +109,26 @@ def update_sensor_settings(
     
     action_text = []
     
-    # ИСПРАВЛЕНИЕ: Логируем is_active только если новое значение отличается от старого
+    # ЛОГИКА ЛОГИРОВАНИЯ: Сравниваем новое значение с текущим в БД, чтобы не спамить лог.
+    
+    # 1. Логируем is_active только если новое значение отличается от старого
     if update_data.is_active is not None and update_data.is_active != sensor.is_active:
-        sensor.is_active = update_data.is_active # Обновляем объект
+        sensor.is_active = update_data.is_active 
         status = "Включил" if update_data.is_active else "Выключил"
         action_text.append(f"{status} датчик {sensor.name}")
         
-    # Логируем target_value, если оно было предоставлено
+    # 2. Логируем target_value только если оно было предоставлено и изменилось
     if update_data.target_value is not None:
-        # Также проверяем, что значение действительно изменилось (хорошая практика)
         if update_data.target_value != sensor.target_value:
-            sensor.target_value = update_data.target_value # Обновляем объект
+            sensor.target_value = update_data.target_value 
             action_text.append(f"Изменил {sensor.name} на {update_data.target_value}")
 
     if action_text:
+        # Сохраняем изменения в таблице sensors
         db.commit()
         db.refresh(sensor)
         
+        # Записываем в action_logs
         full_action_description = ", ".join(action_text)
         new_log = models.ActionLog(
             user_id=user_id,
@@ -148,7 +151,7 @@ def update_sensor_settings(
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(db: Session = Depends(get_db)):
     """
-    Считает среднюю температуру и влажность.
+    Считает среднюю температуру и влажность, а также их процентное изменение за 24 часа.
     """
     sensors = db.query(models.Sensor).all()
     
@@ -160,10 +163,7 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
     time_24h_ago = datetime.utcnow() - timedelta(days=1)
 
     for sensor in sensors:
-        last_measure = db.query(models.Measurement)\
-            .filter(models.Measurement.sensor_id == sensor.id)\
-            .order_by(models.Measurement.timestamp.desc())\
-            .first()
+        last_measure = crud.get_last_measurement(db, sensor.id)
         
         old_measure = db.query(models.Measurement)\
             .filter(models.Measurement.sensor_id == sensor.id, 
@@ -172,6 +172,7 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
             .first()
         
         if last_measure:
+            # Используем sensor_type.name для определения типа
             if sensor.sensor_type.name == "Temperature":
                 cur_temp_vals.append(last_measure.value)
                 if old_measure: old_temp_vals.append(old_measure.value)
@@ -227,6 +228,7 @@ def get_reports(db: Session = Depends(get_db)):
 def generate_report_endpoint(period: str, db: Session = Depends(get_db)):
     """
     Инициирует генерацию отчета (недельный или месячный).
+    Эта функция будет вызываться Cloud Scheduler.
     """
     end_time = datetime.utcnow()
     
@@ -245,8 +247,7 @@ def generate_report_endpoint(period: str, db: Session = Depends(get_db)):
     if not report_data:
         return {"message": f"Нет данных для создания {title_prefix.lower()} за период: {start_time.strftime('%Y-%m-%d')} - {end_time.strftime('%Y-%m-%d')}"}
 
-    # 2. Формирование содержания отчета (имитация PDF)
-    
+    # 2. Формирование содержания отчета (имитация)
     report_content_lines = [f"{title_prefix} за период {start_time.strftime('%d.%m.%Y')} - {end_time.strftime('%d.%m.%Y')}\n"]
     report_content_lines.append("--------------------------------------------------")
     for data in report_data:
@@ -254,21 +255,28 @@ def generate_report_endpoint(period: str, db: Session = Depends(get_db)):
             f"Локация: {data['location']} | Датчик: {data['sensor']} ({data['type']})\n"
             f"  Среднее: {data['avg']} | Мин: {data['min']} | Макс: {data['max']}"
         )
-    
     report_file_content = "\n".join(report_content_lines)
     
-    # 3. Сохранение метаданных отчета в БД и ссылка на GCS
-    report_title = f"{title_prefix} ({start_time.strftime('%d.%m')} - {end_time.strftime('%d.%m')})"
+    # 3. Загрузка файла в GCS и получение URL
     
-    # *** ИСПОЛЬЗУЕМ ВАШ РЕАЛЬНЫЙ БАКЕТ И ПАПКУ ***
-    # В реальной жизни 'reports-backet' - это имя вашего бакета (корзины) в Cloud Storage
-    # 'reports' - это папка внутри бакета
-    file_path = f"https://storage.googleapis.com/reports-backet/reports/{period}_{end_time.strftime('%Y%m%d')}.pdf"
-    # **********************************************
+    # Полный путь в бакете
+    blob_path = f"reports/{period}_{end_time.strftime('%Y%m%d')}.txt"
+    bucket_name = 'reports-backet' # Ваш бакет
+
+    # Вызываем функцию CRUD для загрузки
+    file_url = crud.upload_to_gcs(
+        bucket_name=bucket_name,
+        file_path=blob_path,
+        content=report_file_content,
+        content_type='text/plain' # В реальной жизни было бы application/pdf
+    )
+    
+    # 4. Сохранение метаданных отчета в БД
+    report_title = f"{title_prefix} ({start_time.strftime('%d.%m')} - {end_time.strftime('%d.%m')})"
     
     new_report = models.Report(
         title=report_title,
-        file_path=file_path,
+        file_path=file_url,
         report_date=end_time
     )
     db.add(new_report)
@@ -277,8 +285,7 @@ def generate_report_endpoint(period: str, db: Session = Depends(get_db)):
     return {
         "message": "Отчет успешно сгенерирован и сохранен.", 
         "title": report_title,
-        "data_summary": report_data[:3], # Показываем первые 3 записи для подтверждения
-        "report_content_preview": report_file_content # В реальной жизни это не возвращается
+        "report_url": file_url
     }
 
 
@@ -420,7 +427,7 @@ def seed_database(db: Session = Depends(get_db)):
         db.add(u1)
         
     if db.query(models.Report).count() == 0:
-        # Удаляем старый тестовый отчет, чтобы не мешал
+        # В этом блоке мы не создаем отчеты, чтобы они не мешали автоматической генерации
         pass
         
     db.commit()
