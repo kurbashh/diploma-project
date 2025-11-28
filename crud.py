@@ -165,7 +165,7 @@ def upload_to_gcs(bucket_name: str, file_path: str, content: str, content_type: 
         
         # Загружаем содержимое отчета как строку
         blob.upload_from_string(
-            content,
+            content.encode('utf-8'),
             content_type=content_type
         )
         
