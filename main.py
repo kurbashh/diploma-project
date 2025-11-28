@@ -2,13 +2,13 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import datetime, timedelta
-import random # Для генерации тестовых данных
-import crud # Импортируем наш новый файл
-# Импортируем наши обновленные файлы
+import random
+
+# Импортируем наши модули
+import crud
 import models
 import schemas
 from database import SessionLocal, engine
-import random
 
 # Создаем таблицы (если их нет)
 models.Base.metadata.create_all(bind=engine)
@@ -22,6 +22,10 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# -------------------------------------------------------------------
+# 📍 1. ЛОКАЦИИ И ДАТЧИКИ
+# -------------------------------------------------------------------
 
 @app.get("/api/locations", response_model=List[schemas.LocationRead])
 def get_locations(db: Session = Depends(get_db)):
@@ -100,31 +104,63 @@ def update_sensor_settings(
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(db: Session = Depends(get_db)):
     """
-    Считает среднюю температуру и влажность по ВСЕМ датчикам сразу.
+    Считает среднюю температуру и влажность, а также % изменения за 24 часа.
     """
     sensors = db.query(models.Sensor).all()
     
-    temp_values = []
-    hum_values = []
+    # Списки для текущих значений
+    cur_temp_vals = []
+    cur_hum_vals = []
+    
+    # Списки для значений 24 часа назад (для расчета изменения)
+    old_temp_vals = []
+    old_hum_vals = []
+
+    time_24h_ago = datetime.utcnow() - timedelta(days=1)
 
     for sensor in sensors:
+        # 1. Текущее значение (последнее доступное)
         last_measure = db.query(models.Measurement)\
             .filter(models.Measurement.sensor_id == sensor.id)\
             .order_by(models.Measurement.timestamp.desc())\
             .first()
         
+        # 2. Старое значение (ближайшее к моменту "24 часа назад")
+        # Ищем запись, которая была сделана ДО time_24h_ago, берем последнюю из них
+        old_measure = db.query(models.Measurement)\
+            .filter(models.Measurement.sensor_id == sensor.id, 
+                    models.Measurement.timestamp <= time_24h_ago)\
+            .order_by(models.Measurement.timestamp.desc())\
+            .first()
+        
         if last_measure:
             if sensor.sensor_type.name == "Temperature":
-                temp_values.append(last_measure.value)
+                cur_temp_vals.append(last_measure.value)
+                if old_measure: old_temp_vals.append(old_measure.value)
             elif sensor.sensor_type.name == "Humidity":
-                hum_values.append(last_measure.value)
+                cur_hum_vals.append(last_measure.value)
+                if old_measure: old_hum_vals.append(old_measure.value)
     
-    avg_temp = sum(temp_values) / len(temp_values) if temp_values else 0.0
-    avg_hum = sum(hum_values) / len(hum_values) if hum_values else 0.0
+    # Вспомогательные функции
+    def get_avg(values):
+        return sum(values) / len(values) if values else 0.0
+        
+    def get_percent_change(current, old):
+        if not old or old == 0: return 0.0
+        return ((current - old) / old) * 100
+
+    # Считаем средние
+    avg_temp_now = get_avg(cur_temp_vals)
+    avg_hum_now = get_avg(cur_hum_vals)
+    
+    avg_temp_old = get_avg(old_temp_vals)
+    avg_hum_old = get_avg(old_hum_vals)
 
     return {
-        "avg_temperature": round(avg_temp, 1),
-        "avg_humidity": round(avg_hum, 1)
+        "avg_temperature": round(avg_temp_now, 1),
+        "avg_humidity": round(avg_hum_now, 1),
+        "temp_change": round(get_percent_change(avg_temp_now, avg_temp_old), 1),
+        "hum_change": round(get_percent_change(avg_hum_now, avg_hum_old), 1)
     }
 
 @app.get("/analytics/{sensor_id}", response_model=List[schemas.ChartPoint])
