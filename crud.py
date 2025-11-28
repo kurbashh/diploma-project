@@ -151,21 +151,23 @@ def calculate_report_data(db: Session, start_time: datetime, end_time: datetime)
         
     return report_data
 
-def upload_to_gcs(bucket_name: str, file_path: str, content: str, content_type: str = 'text/plain'):
+def upload_to_gcs(bucket_name: str, file_path: str, content: str, content_type: str = 'text/plain; charset=utf-8'):
     """
     Создает простой текстовый файл (заглушка PDF) и загружает его в GCS.
+    Гарантированно кодирует контент в UTF-8 для устранения Mojibake.
     """
     try:
         # Client() автоматически ищет учетные данные в Cloud Run.
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
         
-        # Полный путь к файлу в бакете (например, reports/weekly_20251128.pdf)
+        # Полный путь к файлу в бакете (например, reports/weekly_20251128.txt)
         blob = bucket.blob(file_path)
         
-        # Загружаем содержимое отчета как строку
+        # --- КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ЯВНОЕ КОДИРОВАНИЕ В UTF-8 ---
+        # Мы преобразуем Python-строку в байты перед загрузкой.
         blob.upload_from_string(
-            content.encode('utf-8'),
+            content.encode('utf-8'), 
             content_type=content_type
         )
         
