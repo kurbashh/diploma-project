@@ -8,6 +8,7 @@ import crud # Импортируем наш новый файл
 import models
 import schemas
 from database import SessionLocal, engine
+import random
 
 # Создаем таблицы (если их нет)
 models.Base.metadata.create_all(bind=engine)
@@ -27,9 +28,6 @@ def get_locations(db: Session = Depends(get_db)):
     """Получить список всех локаций (кабинетов) для выпадающего списка."""
     return crud.get_all_locations(db)
 
-# --- 1. ЭКРАН "ДАТЧИКИ" (Список и управление) ---
-
-# [ИСПРАВЛЕНО] Старая функция get_sensors удаляется/заменяется на эту
 @app.get("/api/sensors/{location_id}", response_model=List[schemas.SensorRead])
 def get_sensors_by_location_id(location_id: int, db: Session = Depends(get_db)):
     """Получить список всех датчиков в конкретной локации (кабинете)."""
@@ -48,20 +46,15 @@ def get_sensors_by_location_id(location_id: int, db: Session = Depends(get_db)):
         
     return result
 
-# ... (update_sensor_settings остается почти без изменений) ...
-
-# main.py
-
 @app.patch("/api/sensors/{sensor_id}", response_model=schemas.SensorRead)
 def update_sensor_settings(
     sensor_id: int, 
     update_data: schemas.SensorUpdate, 
-    user_id: int = 1, # <--- ВРЕМЕННО: принимаем ID юзера (по умолчанию 1, если фронт не прислал)
+    user_id: int = 1, # ID юзера для логов (по умолчанию 1)
     db: Session = Depends(get_db)
 ):
     """
     Управление датчиком с записью в ЛОГИ.
-    Frontend должен передавать ?user_id=... в строке запроса.
     """
     sensor = db.query(models.Sensor).filter(models.Sensor.id == sensor_id).first()
     if not sensor:
@@ -80,236 +73,41 @@ def update_sensor_settings(
 
     # 2. Если были изменения, пишем их в базу и в ЛОГИ
     if action_text:
-        # Сохраняем изменения датчика
         db.commit()
         db.refresh(sensor)
         
-        # --- ЗАПИСЬ В ЖУРНАЛ (ТО, ЧЕГО НЕ ХВАТАЛО) ---
+        # --- ЗАПИСЬ В ЖУРНАЛ ---
         full_action_description = ", ".join(action_text)
         new_log = models.ActionLog(
-            user_id=user_id,  # Кто сделал
-            action=full_action_description, # Что сделал
+            user_id=user_id,
+            action=full_action_description,
             timestamp=datetime.utcnow()
         )
         db.add(new_log)
-        db.commit() # Сохраняем лог
+        db.commit()
 
-    # 3. Возвращаем обновленный датчик (с last_value)
+    # 3. Возвращаем обновленный датчик
     last_measure = crud.get_last_measurement(db, sensor.id)
     updated_sensor = schemas.SensorRead.from_orm(sensor)
     updated_sensor.last_value = last_measure.value if last_measure else 0.0
     
     return updated_sensor
 
-# --- 2. ЭКРАН "АНАЛИЗ" (Графики) ---
-
-@app.get("/api/history", response_model=List[schemas.MeasurementRead])
-def get_history(sensor_id: int = None, db: Session = Depends(get_db)):
-    """Данные для графика. Можно фильтровать по ID датчика."""
-    query = db.query(models.Measurement)
-    if sensor_id:
-        query = query.filter(models.Measurement.sensor_id == sensor_id)
-    
-    # Берем последние 100 записей
-    return query.order_by(models.Measurement.timestamp.desc()).limit(100).all()
-
-# --- ДОБАВЛЯЕМ ЭНДПОИНТ ДЛЯ ЗАПИСИ НОВЫХ ПОКАЗАТЕЛЕЙ ---
-
-@app.post("/api/measurements", status_code=status.HTTP_201_CREATED)
-def record_measurement(
-    measurement: schemas.MeasurementCreate, 
-    db: Session = Depends(get_db)
-):
-    """Принимает новое измерение от скрипта-имитатора и записывает в базу."""
-    
-    # 1. Проверяем, существует ли указанный датчик
-    sensor = db.query(models.Sensor).filter(models.Sensor.id == measurement.sensor_id).first()
-    if not sensor:
-        raise HTTPException(status_code=404, detail="Sensor not found")
-        
-    # 2. Создаем запись измерения
-    # Используем данные из схемы: value, sensor_id. Timestamp генерируется базой.
-    db_measurement = models.Measurement(
-        sensor_id=measurement.sensor_id, 
-        location_id=sensor.location_id, # Берем ID локации из объекта Sensor
-        value=measurement.value,
-        timestamp=datetime.utcnow()
-    )
-    
-    db.add(db_measurement)
-    db.commit()
-    return {"status": "recorded", "value": measurement.value}
-
-# --- 3. ЭКРАН "ПОЛЬЗОВАТЕЛИ" ---
-
-# ВАЖНО: response_model изменен на UserListDTO
-@app.get("/api/users", response_model=List[schemas.UserListDTO])
-def get_users(db: Session = Depends(get_db)):
-    """Возвращает список пользователей, отформатированный для UI"""
-    return crud.get_users_for_ui(db)
-
-# ВАЖНО: response_model изменен на ActionLogDTO
-@app.get("/api/logs", response_model=List[schemas.ActionLogDTO])
-def get_logs(limit: int = 20, db: Session = Depends(get_db)):
-    """История действий, отформатированная для UI"""
-    return crud.get_logs_for_ui(db, limit=limit)
-
-# --- 4. ЭКРАН "ГЛАВНАЯ" (Уведомления) ---
-
-@app.get("/api/notifications", response_model=List[schemas.NotificationRead])
-def get_notifications(db: Session = Depends(get_db)):
-    return db.query(models.Notification).filter(models.Notification.is_completed == False).all()
-
-@app.post("/api/notifications/{notif_id}/complete")
-def complete_notification(notif_id: int, db: Session = Depends(get_db)):
-    """Нажать кнопку 'Выполнено'"""
-    notif = db.query(models.Notification).filter(models.Notification.id == notif_id).first()
-    if notif:
-        notif.is_completed = True
-        db.commit()
-    return {"status": "ok"}
-
-# main.py
-
-@app.patch("/api/sensors/{sensor_id}", response_model=schemas.SensorRead)
-def update_sensor_settings(
-    sensor_id: int, 
-    update_data: schemas.SensorUpdate, 
-    user_id: int = 1, # <--- ВРЕМЕННО: принимаем ID юзера (по умолчанию 1, если фронт не прислал)
-    db: Session = Depends(get_db)
-):
-    """
-    Управление датчиком с записью в ЛОГИ.
-    Frontend должен передавать ?user_id=... в строке запроса.
-    """
-    sensor = db.query(models.Sensor).filter(models.Sensor.id == sensor_id).first()
-    if not sensor:
-        raise HTTPException(status_code=404, detail="Sensor not found")
-    
-    # 1. Формируем текст действия для логов
-    action_text = []
-    if update_data.is_active is not None:
-        sensor.is_active = update_data.is_active
-        status = "Включил" if update_data.is_active else "Выключил"
-        action_text.append(f"{status} датчик {sensor.name}")
-        
-    if update_data.target_value is not None:
-        sensor.target_value = update_data.target_value
-        action_text.append(f"Изменил {sensor.name} на {update_data.target_value}")
-
-    # 2. Если были изменения, пишем их в базу и в ЛОГИ
-    if action_text:
-        # Сохраняем изменения датчика
-        db.commit()
-        db.refresh(sensor)
-        
-        # --- ЗАПИСЬ В ЖУРНАЛ (ТО, ЧЕГО НЕ ХВАТАЛО) ---
-        full_action_description = ", ".join(action_text)
-        new_log = models.ActionLog(
-            user_id=user_id,  # Кто сделал
-            action=full_action_description, # Что сделал
-            timestamp=datetime.utcnow()
-        )
-        db.add(new_log)
-        db.commit() # Сохраняем лог
-
-    # 3. Возвращаем обновленный датчик (с last_value)
-    last_measure = crud.get_last_measurement(db, sensor.id)
-    updated_sensor = schemas.SensorRead.from_orm(sensor)
-    updated_sensor.last_value = last_measure.value if last_measure else 0.0
-    
-    return updated_sensor
-
-# --- ВСПОМОГАТЕЛЬНЫЙ ЭНДПОИНТ (Для первого запуска) ---
-@app.post("/api/seed_data")
-def seed_database(db: Session = Depends(get_db)):
-    """Создает тестовые данные, если они еще не существуют."""
-    
-    # 1. Типы (Проверяем перед добавлением)
-    if not db.query(models.SensorType).filter(models.SensorType.name == "Temperature").first():
-        t_temp = models.SensorType(name="Temperature", unit="°C")
-        db.add(t_temp)
-    else:
-        # Если существует, просто получаем объекты для дальнейшего использования
-        t_temp = db.query(models.SensorType).filter(models.SensorType.name == "Temperature").first()
-
-    if not db.query(models.SensorType).filter(models.SensorType.name == "Humidity").first():
-        t_hum = models.SensorType(name="Humidity", unit="%")
-        db.add(t_hum)
-    else:
-        t_hum = db.query(models.SensorType).filter(models.SensorType.name == "Humidity").first()
-
-    # 2. Локации
-    loc_name = "Main Workshop"
-    loc = db.query(models.Location).filter(models.Location.name == loc_name).first()
-    if not loc:
-        loc = models.Location(name=loc_name)
-        db.add(loc)
-        db.commit() # Коммитим локацию, чтобы получить ее ID
-        
-    # 3. Датчики (Проверяем перед добавлением)
-    if not db.query(models.Sensor).filter(models.Sensor.name == "Main AC").first():
-        s1 = models.Sensor(name="Main AC", location_id=loc.id, sensor_type_id=t_temp.id, target_value=20.0)
-        s2 = models.Sensor(name="Humidifier", location_id=loc.id, sensor_type_id=t_hum.id, target_value=80.0)
-        db.add_all([s1, s2])
-
-    # 4. Пользователи
-    if not db.query(models.User).filter(models.User.full_name == "Kseniya Kruchina").first():
-        u1 = models.User(full_name="Kseniya Kruchina", role="engineer", is_online=True, hashed_password="xhz")
-        db.add(u1)
-        
-    db.commit() # Финальный коммит
-
-    # 5. Измерения (История) - Добавляем всегда, если их нет (для новых тестов)
-    if db.query(models.Measurement).count() < 10:
-        s1 = db.query(models.Sensor).filter(models.Sensor.name == "Main AC").first()
-        s2 = db.query(models.Sensor).filter(models.Sensor.name == "Humidifier").first()
-        
-        for i in range(50):
-            m1 = models.Measurement(sensor_id=s1.id, location_id=loc.id, value=20 + random.uniform(-2, 2), timestamp=datetime.utcnow() - timedelta(hours=i))
-            m2 = models.Measurement(sensor_id=s2.id, location_id=loc.id, value=50 + random.uniform(-5, 5), timestamp=datetime.utcnow() - timedelta(hours=i))
-            db.add_all([m1, m2])
-    
-    if db.query(models.Report).count() == 0:
-        r1 = models.Report(
-            title="Недельный отчет (10.11 - 17.11)", 
-            file_path="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf", # Тестовый PDF из интернета
-            report_date=datetime.utcnow() - timedelta(days=2)
-        )
-        r2 = models.Report(
-            title="Месячный отчет (Октябрь)", 
-            file_path="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
-            report_date=datetime.utcnow() - timedelta(days=20)
-        )
-        db.add_all([r1, r2])
-            
-    db.commit()
-    return {"message": "Database seed check completed."}
-
-# Добавили response_model=List[schemas.ChartPoint] для валидации
-@app.get("/analytics/{sensor_id}", response_model=List[schemas.ChartPoint])
-def read_analytics(sensor_id: int, days: int = 7, db: Session = Depends(get_db)):
-    stats = crud.get_analytics_daily(db=db, sensor_id=sensor_id, days=days)
-    if not stats:
-        return []
-    return stats
-
-
-# main.py
+# -------------------------------------------------------------------
+# 📊 2. АНАЛИТИКА И ДЭШБОРД
+# -------------------------------------------------------------------
 
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(db: Session = Depends(get_db)):
     """
     Считает среднюю температуру и влажность по ВСЕМ датчикам сразу.
     """
-    # 1. Получаем все датчики
     sensors = db.query(models.Sensor).all()
     
     temp_values = []
     hum_values = []
 
     for sensor in sensors:
-        # Получаем последнее измерение для датчика
         last_measure = db.query(models.Measurement)\
             .filter(models.Measurement.sensor_id == sensor.id)\
             .order_by(models.Measurement.timestamp.desc())\
@@ -329,4 +127,189 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         "avg_humidity": round(avg_hum, 1)
     }
 
+@app.get("/analytics/{sensor_id}", response_model=List[schemas.ChartPoint])
+def read_analytics(sensor_id: int, days: int = 7, db: Session = Depends(get_db)):
+    """Данные для графика (LineChart)"""
+    stats = crud.get_analytics_daily(db=db, sensor_id=sensor_id, days=days)
+    if not stats:
+        return []
+    return stats
 
+@app.get("/api/history", response_model=List[schemas.MeasurementRead])
+def get_history(sensor_id: int = None, db: Session = Depends(get_db)):
+    """Сырые данные (последние 100 записей)"""
+    query = db.query(models.Measurement)
+    if sensor_id:
+        query = query.filter(models.Measurement.sensor_id == sensor_id)
+    return query.order_by(models.Measurement.timestamp.desc()).limit(100).all()
+
+# -------------------------------------------------------------------
+# 📄 3. ОТЧЕТЫ (ВОТ ОНИ!)
+# -------------------------------------------------------------------
+
+@app.get("/api/reports", response_model=List[schemas.ReportRead])
+def get_reports(db: Session = Depends(get_db)):
+    """Получить список доступных отчетов"""
+    return db.query(models.Report).order_by(models.Report.report_date.desc()).all()
+
+@app.get("/api/reports/{report_id}/download")
+def download_report(
+    report_id: int, 
+    user_id: int = 1, 
+    db: Session = Depends(get_db)
+):
+    """Скачать отчет с записью в логи"""
+    report = db.query(models.Report).filter(models.Report.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    # Логируем скачивание
+    new_log = models.ActionLog(
+        user_id=user_id,
+        action=f"Скачал отчет: {report.title}",
+        timestamp=datetime.utcnow()
+    )
+    db.add(new_log)
+    db.commit()
+
+    return {
+        "download_url": report.file_path,
+        "filename": report.title
+    }
+
+# -------------------------------------------------------------------
+# 👥 4. ПОЛЬЗОВАТЕЛИ И ЛОГИ
+# -------------------------------------------------------------------
+
+@app.get("/api/users", response_model=List[schemas.UserListDTO])
+def get_users(db: Session = Depends(get_db)):
+    """Возвращает список пользователей, отформатированный для UI"""
+    return crud.get_users_for_ui(db)
+
+@app.get("/api/logs", response_model=List[schemas.ActionLogDTO])
+def get_logs(limit: int = 20, db: Session = Depends(get_db)):
+    """История действий, отформатированная для UI"""
+    return crud.get_logs_for_ui(db, limit=limit)
+
+# -------------------------------------------------------------------
+# 🔔 5. УВЕДОМЛЕНИЯ
+# -------------------------------------------------------------------
+
+@app.get("/api/notifications", response_model=List[schemas.NotificationRead])
+def get_notifications(db: Session = Depends(get_db)):
+    return db.query(models.Notification).filter(models.Notification.is_completed == False).all()
+
+@app.post("/api/notifications/{notif_id}/complete")
+def complete_notification(notif_id: int, db: Session = Depends(get_db)):
+    """Нажать кнопку 'Выполнено'"""
+    notif = db.query(models.Notification).filter(models.Notification.id == notif_id).first()
+    if notif:
+        notif.is_completed = True
+        db.commit()
+    return {"status": "ok"}
+
+# -------------------------------------------------------------------
+# 📥 6. СЛУЖЕБНЫЕ (IoT и Seed)
+# -------------------------------------------------------------------
+
+@app.post("/api/measurements", status_code=status.HTTP_201_CREATED)
+def record_measurement(
+    measurement: schemas.MeasurementCreate, 
+    db: Session = Depends(get_db)
+):
+    """Принимает новое измерение от скрипта-имитатора"""
+    sensor = db.query(models.Sensor).filter(models.Sensor.id == measurement.sensor_id).first()
+    if not sensor:
+        raise HTTPException(status_code=404, detail="Sensor not found")
+        
+    db_measurement = models.Measurement(
+        sensor_id=measurement.sensor_id, 
+        location_id=sensor.location_id,
+        value=measurement.value,
+        timestamp=datetime.utcnow()
+    )
+    
+    db.add(db_measurement)
+    db.commit()
+    return {"status": "recorded", "value": measurement.value}
+
+@app.post("/api/seed_data")
+def seed_database(db: Session = Depends(get_db)):
+    """
+    Генератор данных: При каждом вызове создает 3 НОВЫХ кабинета.
+    """
+    # 1. Типы
+    t_temp = db.query(models.SensorType).filter(models.SensorType.name == "Temperature").first()
+    if not t_temp:
+        t_temp = models.SensorType(name="Temperature", unit="°C")
+        db.add(t_temp)
+    t_hum = db.query(models.SensorType).filter(models.SensorType.name == "Humidity").first()
+    if not t_hum:
+        t_hum = models.SensorType(name="Humidity", unit="%")
+        db.add(t_hum)
+    db.commit()
+
+    # 2. Локации
+    existing_count = db.query(models.Location).count()
+    NEW_ROOMS_COUNT = 3
+
+    for i in range(1, NEW_ROOMS_COUNT + 1):
+        room_number = existing_count + i
+        new_loc = models.Location(name=f"Кабинет {room_number}")
+        db.add(new_loc)
+        db.commit()
+        db.refresh(new_loc)
+
+        # 3. Датчики
+        s_temp = models.Sensor(
+            name=f"Кондиционер {room_number}", 
+            location_id=new_loc.id, 
+            sensor_type_id=t_temp.id, 
+            target_value=22.0,
+            is_active=True
+        )
+        s_hum = models.Sensor(
+            name=f"Увлажнитель {room_number}", 
+            location_id=new_loc.id, 
+            sensor_type_id=t_hum.id, 
+            target_value=45.0,
+            is_active=True
+        )
+        db.add_all([s_temp, s_hum])
+        db.commit()
+        
+        # 4. История
+        for hour in range(24):
+            val_temp = 22.0 + random.uniform(-3, 3) 
+            m1 = models.Measurement(
+                sensor_id=s_temp.id, 
+                location_id=new_loc.id, 
+                value=round(val_temp, 1), 
+                timestamp=datetime.utcnow() - timedelta(hours=hour)
+            )
+            val_hum = 45.0 + random.uniform(-10, 10)
+            m2 = models.Measurement(
+                sensor_id=s_hum.id, 
+                location_id=new_loc.id, 
+                value=round(val_hum, 1), 
+                timestamp=datetime.utcnow() - timedelta(hours=hour)
+            )
+            db.add_all([m1, m2])
+
+    # 5. Пользователь (инженер)
+    if not db.query(models.User).filter(models.User.full_name == "Kseniya Kruchina").first():
+        u1 = models.User(full_name="Kseniya Kruchina", role="engineer", is_online=True, hashed_password="xhz")
+        db.add(u1)
+        
+    # 6. Тестовые Отчеты (Чтобы было что качать)
+    if db.query(models.Report).count() == 0:
+        r1 = models.Report(
+            title="Недельный отчет (10.11 - 17.11)", 
+            file_path="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+            report_date=datetime.utcnow() - timedelta(days=2)
+        )
+        db.add(r1)
+
+    db.commit()
+    
+    return {"message": f"Успешно создано {NEW_ROOMS_COUNT} новых кабинета (с {existing_count + 1})!"}
