@@ -4,7 +4,7 @@ import random
 from datetime import datetime
 
 # --- КОНФИГУРАЦИЯ ---
-BASE_URL = "http://localhost:8000"
+BASE_URL = "https://diploma-project-29973543489.europe-west1.run.app"
 ENDPOINT = "/api/measurements"
 INTERVAL_SECONDS = 30 
 
