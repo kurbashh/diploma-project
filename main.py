@@ -8,10 +8,10 @@ import random
 import crud
 import models
 import schemas
-from database import SessionLocal, engine
+from database import SessionLocal, engine # Убедитесь, что engine корректно импортируется
 
 # Создаем таблицы (если их нет)
-models.Base.metadata.create_all(bind=engine)
+# models.Base.metadata.create_all(bind=engine) <--- УДАЛЕНО
 
 app = FastAPI(title="Microclimate Monitoring API")
 
@@ -30,6 +30,8 @@ def get_db():
 @app.get("/api/locations", response_model=List[schemas.LocationRead])
 def get_locations(db: Session = Depends(get_db)):
     """Получить список всех локаций (кабинетов) для выпадающего списка."""
+    # Обращение к CRUD: Если CRUD импортирует models, и models импортирует database,
+    # то импорт CRUD здесь должен работать.
     return crud.get_all_locations(db)
 
 @app.get("/api/sensors/{location_id}", response_model=List[schemas.SensorRead])
@@ -106,14 +108,19 @@ def update_sensor_settings(
         raise HTTPException(status_code=404, detail="Sensor not found")
     
     action_text = []
-    if update_data.is_active is not None:
-        sensor.is_active = update_data.is_active
+    
+    # ИСПРАВЛЕНИЕ: Логируем is_active только если новое значение отличается от старого
+    if update_data.is_active is not None and update_data.is_active != sensor.is_active:
+        sensor.is_active = update_data.is_active # Обновляем объект
         status = "Включил" if update_data.is_active else "Выключил"
         action_text.append(f"{status} датчик {sensor.name}")
         
+    # Логируем target_value, если оно было предоставлено
     if update_data.target_value is not None:
-        sensor.target_value = update_data.target_value
-        action_text.append(f"Изменил {sensor.name} на {update_data.target_value}")
+        # Также проверяем, что значение действительно изменилось (хорошая практика)
+        if update_data.target_value != sensor.target_value:
+            sensor.target_value = update_data.target_value # Обновляем объект
+            action_text.append(f"Изменил {sensor.name} на {update_data.target_value}")
 
     if action_text:
         db.commit()
@@ -282,7 +289,7 @@ def record_measurement(
         raise HTTPException(status_code=404, detail="Sensor not found")
         
     db_measurement = models.Measurement(
-        sensor_id=measurement.sensor_id, 
+        sensor_id=sensor.id, 
         location_id=sensor.location_id,
         value=measurement.value,
         timestamp=datetime.utcnow()
