@@ -50,24 +50,52 @@ def get_sensors_by_location_id(location_id: int, db: Session = Depends(get_db)):
 
 # ... (update_sensor_settings остается почти без изменений) ...
 
+# main.py
+
 @app.patch("/api/sensors/{sensor_id}", response_model=schemas.SensorRead)
-def update_sensor_settings(sensor_id: int, update_data: schemas.SensorUpdate, db: Session = Depends(get_db)):
+def update_sensor_settings(
+    sensor_id: int, 
+    update_data: schemas.SensorUpdate, 
+    user_id: int = 1, # <--- ВРЕМЕННО: принимаем ID юзера (по умолчанию 1, если фронт не прислал)
+    db: Session = Depends(get_db)
+):
     """
-    Управление датчиком: Включение/Выключение, Изменение целевого значения.
+    Управление датчиком с записью в ЛОГИ.
+    Frontend должен передавать ?user_id=... в строке запроса.
     """
     sensor = db.query(models.Sensor).filter(models.Sensor.id == sensor_id).first()
     if not sensor:
         raise HTTPException(status_code=404, detail="Sensor not found")
     
-    # ... (логика обновления данных) ...
+    # 1. Формируем текст действия для логов
+    action_text = []
+    if update_data.is_active is not None:
+        sensor.is_active = update_data.is_active
+        status = "Включил" if update_data.is_active else "Выключил"
+        action_text.append(f"{status} датчик {sensor.name}")
         
-    db.commit()
-    db.refresh(sensor)
-    
-    # [Улучшено] Используем CRUD-функцию для получения последнего измерения
-    last_measure = crud.get_last_measurement(db, sensor.id)
+    if update_data.target_value is not None:
+        sensor.target_value = update_data.target_value
+        action_text.append(f"Изменил {sensor.name} на {update_data.target_value}")
 
-    # Создаем Pydantic схему для ответа, чтобы добавить last_value
+    # 2. Если были изменения, пишем их в базу и в ЛОГИ
+    if action_text:
+        # Сохраняем изменения датчика
+        db.commit()
+        db.refresh(sensor)
+        
+        # --- ЗАПИСЬ В ЖУРНАЛ (ТО, ЧЕГО НЕ ХВАТАЛО) ---
+        full_action_description = ", ".join(action_text)
+        new_log = models.ActionLog(
+            user_id=user_id,  # Кто сделал
+            action=full_action_description, # Что сделал
+            timestamp=datetime.utcnow()
+        )
+        db.add(new_log)
+        db.commit() # Сохраняем лог
+
+    # 3. Возвращаем обновленный датчик (с last_value)
+    last_measure = crud.get_last_measurement(db, sensor.id)
     updated_sensor = schemas.SensorRead.from_orm(sensor)
     updated_sensor.last_value = last_measure.value if last_measure else 0.0
     
@@ -141,6 +169,57 @@ def complete_notification(notif_id: int, db: Session = Depends(get_db)):
         db.commit()
     return {"status": "ok"}
 
+# main.py
+
+@app.patch("/api/sensors/{sensor_id}", response_model=schemas.SensorRead)
+def update_sensor_settings(
+    sensor_id: int, 
+    update_data: schemas.SensorUpdate, 
+    user_id: int = 1, # <--- ВРЕМЕННО: принимаем ID юзера (по умолчанию 1, если фронт не прислал)
+    db: Session = Depends(get_db)
+):
+    """
+    Управление датчиком с записью в ЛОГИ.
+    Frontend должен передавать ?user_id=... в строке запроса.
+    """
+    sensor = db.query(models.Sensor).filter(models.Sensor.id == sensor_id).first()
+    if not sensor:
+        raise HTTPException(status_code=404, detail="Sensor not found")
+    
+    # 1. Формируем текст действия для логов
+    action_text = []
+    if update_data.is_active is not None:
+        sensor.is_active = update_data.is_active
+        status = "Включил" if update_data.is_active else "Выключил"
+        action_text.append(f"{status} датчик {sensor.name}")
+        
+    if update_data.target_value is not None:
+        sensor.target_value = update_data.target_value
+        action_text.append(f"Изменил {sensor.name} на {update_data.target_value}")
+
+    # 2. Если были изменения, пишем их в базу и в ЛОГИ
+    if action_text:
+        # Сохраняем изменения датчика
+        db.commit()
+        db.refresh(sensor)
+        
+        # --- ЗАПИСЬ В ЖУРНАЛ (ТО, ЧЕГО НЕ ХВАТАЛО) ---
+        full_action_description = ", ".join(action_text)
+        new_log = models.ActionLog(
+            user_id=user_id,  # Кто сделал
+            action=full_action_description, # Что сделал
+            timestamp=datetime.utcnow()
+        )
+        db.add(new_log)
+        db.commit() # Сохраняем лог
+
+    # 3. Возвращаем обновленный датчик (с last_value)
+    last_measure = crud.get_last_measurement(db, sensor.id)
+    updated_sensor = schemas.SensorRead.from_orm(sensor)
+    updated_sensor.last_value = last_measure.value if last_measure else 0.0
+    
+    return updated_sensor
+
 # --- ВСПОМОГАТЕЛЬНЫЙ ЭНДПОИНТ (Для первого запуска) ---
 @app.post("/api/seed_data")
 def seed_database(db: Session = Depends(get_db)):
@@ -190,6 +269,19 @@ def seed_database(db: Session = Depends(get_db)):
             m1 = models.Measurement(sensor_id=s1.id, location_id=loc.id, value=20 + random.uniform(-2, 2), timestamp=datetime.utcnow() - timedelta(hours=i))
             m2 = models.Measurement(sensor_id=s2.id, location_id=loc.id, value=50 + random.uniform(-5, 5), timestamp=datetime.utcnow() - timedelta(hours=i))
             db.add_all([m1, m2])
+    
+    if db.query(models.Report).count() == 0:
+        r1 = models.Report(
+            title="Недельный отчет (10.11 - 17.11)", 
+            file_path="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf", # Тестовый PDF из интернета
+            report_date=datetime.utcnow() - timedelta(days=2)
+        )
+        r2 = models.Report(
+            title="Месячный отчет (Октябрь)", 
+            file_path="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+            report_date=datetime.utcnow() - timedelta(days=20)
+        )
+        db.add_all([r1, r2])
             
     db.commit()
     return {"message": "Database seed check completed."}
@@ -201,3 +293,5 @@ def read_analytics(sensor_id: int, days: int = 7, db: Session = Depends(get_db))
     if not stats:
         return []
     return stats
+
+
