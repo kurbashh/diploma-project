@@ -102,3 +102,50 @@ def get_logs_for_ui(db: Session, limit: int = 20) -> list[schemas.ActionLogDTO]:
             time=time_str
         ))
     return result
+
+
+# --- НОВАЯ ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ ОТЧЕТА ---
+
+def calculate_report_data(db: Session, start_time: datetime, end_time: datetime):
+    """
+    Рассчитывает агрегированные данные для отчета по всем датчикам за период.
+    Возвращает список словарей с агрегатами.
+    """
+    
+    # Выполняем сложный запрос для сбора статистики:
+    # Группируем по Location, SensorType и Sensor, находим MIN, MAX, AVG.
+    stats = db.query(
+        models.Location.name.label("location_name"),
+        models.Sensor.name.label("sensor_name"),
+        models.SensorType.name.label("sensor_type"),
+        func.avg(models.Measurement.value).label("avg_value"),
+        func.min(models.Measurement.value).label("min_value"),
+        func.max(models.Measurement.value).label("max_value")
+    ).join(
+        models.Measurement, models.Measurement.sensor_id == models.Sensor.id
+    ).join(
+        models.Location, models.Location.id == models.Sensor.location_id
+    ).join(
+        models.SensorType, models.SensorType.id == models.Sensor.sensor_type_id
+    ).filter(
+        models.Measurement.timestamp >= start_time,
+        models.Measurement.timestamp < end_time
+    ).group_by(
+        models.Location.name,
+        models.Sensor.name,
+        models.SensorType.name
+    ).all()
+    
+    # Преобразуем результат в удобный список словарей
+    report_data = []
+    for row in stats:
+        report_data.append({
+            "location": row.location_name,
+            "sensor": row.sensor_name,
+            "type": row.sensor_type,
+            "avg": round(row.avg_value, 2),
+            "min": round(row.min_value, 2),
+            "max": round(row.max_value, 2),
+        })
+        
+    return report_data
