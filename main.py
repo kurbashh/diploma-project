@@ -295,3 +295,38 @@ def read_analytics(sensor_id: int, days: int = 7, db: Session = Depends(get_db))
     return stats
 
 
+# main.py
+
+@app.get("/api/dashboard/stats")
+def get_dashboard_stats(db: Session = Depends(get_db)):
+    """
+    Считает среднюю температуру и влажность по ВСЕМ датчикам сразу.
+    """
+    # 1. Получаем все датчики
+    sensors = db.query(models.Sensor).all()
+    
+    temp_values = []
+    hum_values = []
+
+    for sensor in sensors:
+        # Получаем последнее измерение для датчика
+        last_measure = db.query(models.Measurement)\
+            .filter(models.Measurement.sensor_id == sensor.id)\
+            .order_by(models.Measurement.timestamp.desc())\
+            .first()
+        
+        if last_measure:
+            if sensor.sensor_type.name == "Temperature":
+                temp_values.append(last_measure.value)
+            elif sensor.sensor_type.name == "Humidity":
+                hum_values.append(last_measure.value)
+    
+    avg_temp = sum(temp_values) / len(temp_values) if temp_values else 0.0
+    avg_hum = sum(hum_values) / len(hum_values) if hum_values else 0.0
+
+    return {
+        "avg_temperature": round(avg_temp, 1),
+        "avg_humidity": round(avg_hum, 1)
+    }
+
+
