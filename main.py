@@ -34,18 +34,59 @@ def get_locations(db: Session = Depends(get_db)):
 
 @app.get("/api/sensors/{location_id}", response_model=List[schemas.SensorRead])
 def get_sensors_by_location_id(location_id: int, db: Session = Depends(get_db)):
-    """Получить список всех датчиков в конкретной локации (кабинете)."""
+    """
+    Получить датчики + СИМУЛЯЦИЯ ФИЗИКИ.
+    При запросе мы проверяем, нужно ли 'подтянуть' текущее значение к целевому.
+    """
     
     sensors = crud.get_sensors_by_location(db, location_id)
     
-    # Заполняем вычисляемое поле last_value
     result = []
     for sensor in sensors:
         last_measure = crud.get_last_measurement(db, sensor.id)
+        current_val = last_measure.value if last_measure else 0.0
         
-        # Создаем экземпляр Pydantic, вручную заполняя last_value
+        # --- ЛОГИКА СИМУЛЯЦИИ (PHYSICS ENGINE) ---
+        # Если датчик включен и есть разница между целью и фактом
+        if sensor.is_active and sensor.target_value is not None:
+            diff = sensor.target_value - current_val
+            
+            # Если разница существенная (больше 0.1)
+            if abs(diff) > 0.1:
+                # Проверяем, давно ли было последнее обновление (чтобы не спамить базу при частом обновлении)
+                # Обновляем "физику" не чаще чем раз в 5 секунд
+                time_since_last = datetime.utcnow() - last_measure.timestamp if last_measure else timedelta(seconds=100)
+                
+                if time_since_last.total_seconds() > 5:
+                    # Двигаемся к цели на 10% от оставшегося пути (эффект плавного замедления)
+                    step = diff * 0.1
+                    
+                    # Но не меньше 0.1 градуса за раз, чтобы не застрять
+                    if abs(step) < 0.1:
+                        step = 0.1 if diff > 0 else -0.1
+                        
+                    # Добавляем немного шума (случайности), чтобы выглядело как реальный датчик
+                    noise = random.uniform(-0.05, 0.05)
+                    new_val = current_val + step + noise
+                    
+                    # Создаем запись в базе (будто датчик прислал данные)
+                    new_measure = models.Measurement(
+                        sensor_id=sensor.id,
+                        location_id=sensor.location_id,
+                        value=round(new_val, 2),
+                        timestamp=datetime.utcnow()
+                    )
+                    db.add(new_measure)
+                    db.commit()
+                    
+                    # Обновляем значение для выдачи на фронт
+                    current_val = new_val
+
+        # -----------------------------------------
+        
+        # Создаем экземпляр Pydantic
         sensor_data = schemas.SensorRead.from_orm(sensor)
-        sensor_data.last_value = last_measure.value if last_measure else 0.0
+        sensor_data.last_value = round(current_val, 1) # Округляем для красоты
         result.append(sensor_data)
         
     return result
@@ -54,7 +95,7 @@ def get_sensors_by_location_id(location_id: int, db: Session = Depends(get_db)):
 def update_sensor_settings(
     sensor_id: int, 
     update_data: schemas.SensorUpdate, 
-    user_id: int = 1, # ID юзера для логов (по умолчанию 1)
+    user_id: int = 1, # ID юзера для логов
     db: Session = Depends(get_db)
 ):
     """
@@ -64,7 +105,6 @@ def update_sensor_settings(
     if not sensor:
         raise HTTPException(status_code=404, detail="Sensor not found")
     
-    # 1. Формируем текст действия для логов
     action_text = []
     if update_data.is_active is not None:
         sensor.is_active = update_data.is_active
@@ -75,12 +115,10 @@ def update_sensor_settings(
         sensor.target_value = update_data.target_value
         action_text.append(f"Изменил {sensor.name} на {update_data.target_value}")
 
-    # 2. Если были изменения, пишем их в базу и в ЛОГИ
     if action_text:
         db.commit()
         db.refresh(sensor)
         
-        # --- ЗАПИСЬ В ЖУРНАЛ ---
         full_action_description = ", ".join(action_text)
         new_log = models.ActionLog(
             user_id=user_id,
@@ -90,7 +128,6 @@ def update_sensor_settings(
         db.add(new_log)
         db.commit()
 
-    # 3. Возвращаем обновленный датчик
     last_measure = crud.get_last_measurement(db, sensor.id)
     updated_sensor = schemas.SensorRead.from_orm(sensor)
     updated_sensor.last_value = last_measure.value if last_measure else 0.0
@@ -104,29 +141,23 @@ def update_sensor_settings(
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(db: Session = Depends(get_db)):
     """
-    Считает среднюю температуру и влажность, а также % изменения за 24 часа.
+    Считает среднюю температуру и влажность.
     """
     sensors = db.query(models.Sensor).all()
     
-    # Списки для текущих значений
     cur_temp_vals = []
     cur_hum_vals = []
-    
-    # Списки для значений 24 часа назад (для расчета изменения)
     old_temp_vals = []
     old_hum_vals = []
 
     time_24h_ago = datetime.utcnow() - timedelta(days=1)
 
     for sensor in sensors:
-        # 1. Текущее значение (последнее доступное)
         last_measure = db.query(models.Measurement)\
             .filter(models.Measurement.sensor_id == sensor.id)\
             .order_by(models.Measurement.timestamp.desc())\
             .first()
         
-        # 2. Старое значение (ближайшее к моменту "24 часа назад")
-        # Ищем запись, которая была сделана ДО time_24h_ago, берем последнюю из них
         old_measure = db.query(models.Measurement)\
             .filter(models.Measurement.sensor_id == sensor.id, 
                     models.Measurement.timestamp <= time_24h_ago)\
@@ -141,7 +172,6 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
                 cur_hum_vals.append(last_measure.value)
                 if old_measure: old_hum_vals.append(old_measure.value)
     
-    # Вспомогательные функции
     def get_avg(values):
         return sum(values) / len(values) if values else 0.0
         
@@ -149,10 +179,8 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         if not old or old == 0: return 0.0
         return ((current - old) / old) * 100
 
-    # Считаем средние
     avg_temp_now = get_avg(cur_temp_vals)
     avg_hum_now = get_avg(cur_hum_vals)
-    
     avg_temp_old = get_avg(old_temp_vals)
     avg_hum_old = get_avg(old_hum_vals)
 
@@ -165,7 +193,7 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
 
 @app.get("/analytics/{sensor_id}", response_model=List[schemas.ChartPoint])
 def read_analytics(sensor_id: int, days: int = 7, db: Session = Depends(get_db)):
-    """Данные для графика (LineChart)"""
+    """Данные для графика"""
     stats = crud.get_analytics_daily(db=db, sensor_id=sensor_id, days=days)
     if not stats:
         return []
@@ -173,19 +201,19 @@ def read_analytics(sensor_id: int, days: int = 7, db: Session = Depends(get_db))
 
 @app.get("/api/history", response_model=List[schemas.MeasurementRead])
 def get_history(sensor_id: int = None, db: Session = Depends(get_db)):
-    """Сырые данные (последние 100 записей)"""
+    """Сырые данные"""
     query = db.query(models.Measurement)
     if sensor_id:
         query = query.filter(models.Measurement.sensor_id == sensor_id)
     return query.order_by(models.Measurement.timestamp.desc()).limit(100).all()
 
 # -------------------------------------------------------------------
-# 📄 3. ОТЧЕТЫ (ВОТ ОНИ!)
+# 📄 3. ОТЧЕТЫ
 # -------------------------------------------------------------------
 
 @app.get("/api/reports", response_model=List[schemas.ReportRead])
 def get_reports(db: Session = Depends(get_db)):
-    """Получить список доступных отчетов"""
+    """Список отчетов"""
     return db.query(models.Report).order_by(models.Report.report_date.desc()).all()
 
 @app.get("/api/reports/{report_id}/download")
@@ -194,12 +222,11 @@ def download_report(
     user_id: int = 1, 
     db: Session = Depends(get_db)
 ):
-    """Скачать отчет с записью в логи"""
+    """Скачать отчет с логированием"""
     report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    # Логируем скачивание
     new_log = models.ActionLog(
         user_id=user_id,
         action=f"Скачал отчет: {report.title}",
@@ -219,12 +246,10 @@ def download_report(
 
 @app.get("/api/users", response_model=List[schemas.UserListDTO])
 def get_users(db: Session = Depends(get_db)):
-    """Возвращает список пользователей, отформатированный для UI"""
     return crud.get_users_for_ui(db)
 
 @app.get("/api/logs", response_model=List[schemas.ActionLogDTO])
 def get_logs(limit: int = 20, db: Session = Depends(get_db)):
-    """История действий, отформатированная для UI"""
     return crud.get_logs_for_ui(db, limit=limit)
 
 # -------------------------------------------------------------------
@@ -237,7 +262,6 @@ def get_notifications(db: Session = Depends(get_db)):
 
 @app.post("/api/notifications/{notif_id}/complete")
 def complete_notification(notif_id: int, db: Session = Depends(get_db)):
-    """Нажать кнопку 'Выполнено'"""
     notif = db.query(models.Notification).filter(models.Notification.id == notif_id).first()
     if notif:
         notif.is_completed = True
@@ -253,7 +277,6 @@ def record_measurement(
     measurement: schemas.MeasurementCreate, 
     db: Session = Depends(get_db)
 ):
-    """Принимает новое измерение от скрипта-имитатора"""
     sensor = db.query(models.Sensor).filter(models.Sensor.id == measurement.sensor_id).first()
     if not sensor:
         raise HTTPException(status_code=404, detail="Sensor not found")
@@ -271,10 +294,7 @@ def record_measurement(
 
 @app.post("/api/seed_data")
 def seed_database(db: Session = Depends(get_db)):
-    """
-    Генератор данных: При каждом вызове создает 3 НОВЫХ кабинета.
-    """
-    # 1. Типы
+    """Генератор данных"""
     t_temp = db.query(models.SensorType).filter(models.SensorType.name == "Temperature").first()
     if not t_temp:
         t_temp = models.SensorType(name="Temperature", unit="°C")
@@ -285,7 +305,6 @@ def seed_database(db: Session = Depends(get_db)):
         db.add(t_hum)
     db.commit()
 
-    # 2. Локации
     existing_count = db.query(models.Location).count()
     NEW_ROOMS_COUNT = 3
 
@@ -296,7 +315,6 @@ def seed_database(db: Session = Depends(get_db)):
         db.commit()
         db.refresh(new_loc)
 
-        # 3. Датчики
         s_temp = models.Sensor(
             name=f"Кондиционер {room_number}", 
             location_id=new_loc.id, 
@@ -314,7 +332,6 @@ def seed_database(db: Session = Depends(get_db)):
         db.add_all([s_temp, s_hum])
         db.commit()
         
-        # 4. История
         for hour in range(24):
             val_temp = 22.0 + random.uniform(-3, 3) 
             m1 = models.Measurement(
@@ -332,12 +349,10 @@ def seed_database(db: Session = Depends(get_db)):
             )
             db.add_all([m1, m2])
 
-    # 5. Пользователь (инженер)
     if not db.query(models.User).filter(models.User.full_name == "Kseniya Kruchina").first():
         u1 = models.User(full_name="Kseniya Kruchina", role="engineer", is_online=True, hashed_password="xhz")
         db.add(u1)
         
-    # 6. Тестовые Отчеты (Чтобы было что качать)
     if db.query(models.Report).count() == 0:
         r1 = models.Report(
             title="Недельный отчет (10.11 - 17.11)", 
@@ -348,4 +363,4 @@ def seed_database(db: Session = Depends(get_db)):
 
     db.commit()
     
-    return {"message": f"Успешно создано {NEW_ROOMS_COUNT} новых кабинета (с {existing_count + 1})!"}
+    return {"message": f"Успешно создано {NEW_ROOMS_COUNT} новых кабинета!"}
