@@ -223,6 +223,65 @@ def get_reports(db: Session = Depends(get_db)):
     """Список отчетов"""
     return db.query(models.Report).order_by(models.Report.report_date.desc()).all()
 
+@app.post("/api/reports/generate/{period}", status_code=status.HTTP_201_CREATED)
+def generate_report_endpoint(period: str, db: Session = Depends(get_db)):
+    """
+    Инициирует генерацию отчета (недельный или месячный).
+    """
+    end_time = datetime.utcnow()
+    
+    if period == "week":
+        start_time = end_time - timedelta(days=7)
+        title_prefix = "Недельный отчет"
+    elif period == "month":
+        start_time = end_time - timedelta(days=30)
+        title_prefix = "Месячный отчет"
+    else:
+        raise HTTPException(status_code=400, detail="Invalid period. Use 'week' or 'month'.")
+
+    # 1. Сбор агрегированных данных
+    report_data = crud.calculate_report_data(db, start_time, end_time)
+    
+    if not report_data:
+        return {"message": f"Нет данных для создания {title_prefix.lower()} за период: {start_time.strftime('%Y-%m-%d')} - {end_time.strftime('%Y-%m-%d')}"}
+
+    # 2. Формирование содержания отчета (имитация PDF)
+    
+    report_content_lines = [f"{title_prefix} за период {start_time.strftime('%d.%m.%Y')} - {end_time.strftime('%d.%m.%Y')}\n"]
+    report_content_lines.append("--------------------------------------------------")
+    for data in report_data:
+        report_content_lines.append(
+            f"Локация: {data['location']} | Датчик: {data['sensor']} ({data['type']})\n"
+            f"  Среднее: {data['avg']} | Мин: {data['min']} | Макс: {data['max']}"
+        )
+    
+    report_file_content = "\n".join(report_content_lines)
+    
+    # 3. Сохранение метаданных отчета в БД и ссылка на GCS
+    report_title = f"{title_prefix} ({start_time.strftime('%d.%m')} - {end_time.strftime('%d.%m')})"
+    
+    # *** ИСПОЛЬЗУЕМ ВАШ РЕАЛЬНЫЙ БАКЕТ И ПАПКУ ***
+    # В реальной жизни 'reports-backet' - это имя вашего бакета (корзины) в Cloud Storage
+    # 'reports' - это папка внутри бакета
+    file_path = f"https://storage.googleapis.com/reports-backet/reports/{period}_{end_time.strftime('%Y%m%d')}.pdf"
+    # **********************************************
+    
+    new_report = models.Report(
+        title=report_title,
+        file_path=file_path,
+        report_date=end_time
+    )
+    db.add(new_report)
+    db.commit()
+
+    return {
+        "message": "Отчет успешно сгенерирован и сохранен.", 
+        "title": report_title,
+        "data_summary": report_data[:3], # Показываем первые 3 записи для подтверждения
+        "report_content_preview": report_file_content # В реальной жизни это не возвращается
+    }
+
+
 @app.get("/api/reports/{report_id}/download")
 def download_report(
     report_id: int, 
@@ -361,96 +420,9 @@ def seed_database(db: Session = Depends(get_db)):
         db.add(u1)
         
     if db.query(models.Report).count() == 0:
-        r1 = models.Report(
-            title="Недельный отчет (10.11 - 17.11)", 
-            file_path="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
-            report_date=datetime.utcnow() - timedelta(days=2)
-        )
-        db.add(r1)
-
+        # Удаляем старый тестовый отчет, чтобы не мешал
+        pass
+        
     db.commit()
     
     return {"message": f"Успешно создано {NEW_ROOMS_COUNT} новых кабинета!"}
-
-
-@app.post("/api/reports/generate/{period}", status_code=status.HTTP_201_CREATED)
-def generate_report_endpoint(period: str, db: Session = Depends(get_db)):
-    """
-    НОВЫЙ ЭНДПОЙНТ: Инициирует генерацию отчета (недельный или месячный).
-    В реальной системе этот эндпоинт вызывался бы планировщиком (Cron/Celery).
-    """
-    end_time = datetime.utcnow()
-    
-    if period == "week":
-        start_time = end_time - timedelta(days=7)
-        title_prefix = "Недельный отчет"
-    elif period == "month":
-        start_time = end_time - timedelta(days=30)
-        title_prefix = "Месячный отчет"
-    else:
-        raise HTTPException(status_code=400, detail="Invalid period. Use 'week' or 'month'.")
-
-    # 1. Сбор агрегированных данных
-    report_data = crud.calculate_report_data(db, start_time, end_time)
-    
-    if not report_data:
-        return {"message": f"Нет данных для создания {title_prefix.lower()} за период: {start_time.strftime('%Y-%m-%d')} - {end_time.strftime('%Y-%m-%d')}"}
-
-    # 2. Формирование содержания отчета (имитация PDF)
-    # В реальной системе здесь создавался бы PDF, DOCX или HTML-файл.
-    
-    report_content_lines = [f"{title_prefix} за период {start_time.strftime('%d.%m.%Y')} - {end_time.strftime('%d.%m.%Y')}\n"]
-    report_content_lines.append("--------------------------------------------------")
-    for data in report_data:
-        report_content_lines.append(
-            f"Локация: {data['location']} | Датчик: {data['sensor']} ({data['type']})\n"
-            f"  Среднее: {data['avg']} | Мин: {data['min']} | Макс: {data['max']}"
-        )
-    
-    report_file_content = "\n".join(report_content_lines)
-    
-    # 3. Сохранение метаданных отчета в БД
-    report_title = f"{title_prefix} ({start_time.strftime('%d.%m')} - {end_time.strftime('%d.%m')})"
-    
-    # Имитация уникального пути к файлу
-    file_path = f"https://reports.microclimate.com/{period}_{end_time.strftime('%Y%m%d')}.pdf"
-    
-    new_report = models.Report(
-        title=report_title,
-        file_path=file_path,
-        report_date=end_time
-    )
-    db.add(new_report)
-    db.commit()
-
-    return {
-        "message": "Отчет успешно сгенерирован и сохранен.", 
-        "title": report_title,
-        "data_summary": report_data[:3], # Показываем первые 3 записи для подтверждения
-        "report_content_preview": report_file_content # В реальной жизни это не возвращается
-    }
-
-
-@app.get("/api/reports/{report_id}/download")
-def download_report(
-    report_id: int, 
-    user_id: int = 1, 
-    db: Session = Depends(get_db)
-):
-    """Скачать отчет с логированием"""
-    report = db.query(models.Report).filter(models.Report.id == report_id).first()
-    if not report:
-        raise HTTPException(status_code=404, detail="Report not found")
-
-    new_log = models.ActionLog(
-        user_id=user_id,
-        action=f"Скачал отчет: {report.title}",
-        timestamp=datetime.utcnow()
-    )
-    db.add(new_log)
-    db.commit()
-
-    return {
-        "download_url": report.file_path,
-        "filename": report.title
-    }
