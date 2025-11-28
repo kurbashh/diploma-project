@@ -144,36 +144,55 @@ def complete_notification(notif_id: int, db: Session = Depends(get_db)):
 # --- ВСПОМОГАТЕЛЬНЫЙ ЭНДПОИНТ (Для первого запуска) ---
 @app.post("/api/seed_data")
 def seed_database(db: Session = Depends(get_db)):
-    """Создает тестовые данные, чтобы интерфейс не был пустым"""
-    # 1. Типы
-    t_temp = models.SensorType(name="Temperature", unit="°C")
-    t_hum = models.SensorType(name="Humidity", unit="%")
-    db.add_all([t_temp, t_hum])
-    db.commit()
+    """Создает тестовые данные, если они еще не существуют."""
     
+    # 1. Типы (Проверяем перед добавлением)
+    if not db.query(models.SensorType).filter(models.SensorType.name == "Temperature").first():
+        t_temp = models.SensorType(name="Temperature", unit="°C")
+        db.add(t_temp)
+    else:
+        # Если существует, просто получаем объекты для дальнейшего использования
+        t_temp = db.query(models.SensorType).filter(models.SensorType.name == "Temperature").first()
+
+    if not db.query(models.SensorType).filter(models.SensorType.name == "Humidity").first():
+        t_hum = models.SensorType(name="Humidity", unit="%")
+        db.add(t_hum)
+    else:
+        t_hum = db.query(models.SensorType).filter(models.SensorType.name == "Humidity").first()
+
     # 2. Локации
-    loc = models.Location(name="Main Workshop")
-    db.add(loc)
+    loc_name = "Main Workshop"
+    loc = db.query(models.Location).filter(models.Location.name == loc_name).first()
+    if not loc:
+        loc = models.Location(name=loc_name)
+        db.add(loc)
+        db.commit() # Коммитим локацию, чтобы получить ее ID
+        
+    # 3. Датчики (Проверяем перед добавлением)
+    if not db.query(models.Sensor).filter(models.Sensor.name == "Main AC").first():
+        s1 = models.Sensor(name="Main AC", location_id=loc.id, sensor_type_id=t_temp.id, target_value=20.0)
+        s2 = models.Sensor(name="Humidifier", location_id=loc.id, sensor_type_id=t_hum.id, target_value=80.0)
+        db.add_all([s1, s2])
+
+    # 4. Пользователи
+    if not db.query(models.User).filter(models.User.full_name == "Kseniya Kruchina").first():
+        u1 = models.User(full_name="Kseniya Kruchina", role="engineer", is_online=True, hashed_password="xhz")
+        db.add(u1)
+        
+    db.commit() # Финальный коммит
+
+    # 5. Измерения (История) - Добавляем всегда, если их нет (для новых тестов)
+    if db.query(models.Measurement).count() < 10:
+        s1 = db.query(models.Sensor).filter(models.Sensor.name == "Main AC").first()
+        s2 = db.query(models.Sensor).filter(models.Sensor.name == "Humidifier").first()
+        
+        for i in range(50):
+            m1 = models.Measurement(sensor_id=s1.id, location_id=loc.id, value=20 + random.uniform(-2, 2), timestamp=datetime.utcnow() - timedelta(hours=i))
+            m2 = models.Measurement(sensor_id=s2.id, location_id=loc.id, value=50 + random.uniform(-5, 5), timestamp=datetime.utcnow() - timedelta(hours=i))
+            db.add_all([m1, m2])
+            
     db.commit()
-    
-    # 3. Датчики
-    s1 = models.Sensor(name="Main AC", location_id=loc.id, sensor_type_id=t_temp.id, target_value=20.0)
-    s2 = models.Sensor(name="Humidifier", location_id=loc.id, sensor_type_id=t_hum.id, target_value=80.0)
-    db.add_all([s1, s2])
-    db.commit()
-    
-    # 4. Измерения (История)
-    for i in range(50):
-        m1 = models.Measurement(sensor_id=s1.id, location_id=loc.id, value=20 + random.uniform(-2, 2), timestamp=datetime.utcnow() - timedelta(hours=i))
-        m2 = models.Measurement(sensor_id=s2.id, location_id=loc.id, value=50 + random.uniform(-5, 5), timestamp=datetime.utcnow() - timedelta(hours=i))
-        db.add_all([m1, m2])
-    
-    # 5. Пользователи
-    u1 = models.User(full_name="Kseniya Kruchina", role="engineer", is_online=True, hashed_password="xhz")
-    db.add(u1)
-    
-    db.commit()
-    return {"message": "Database seeded!"}
+    return {"message": "Database seed check completed."}
 
 # Добавили response_model=List[schemas.ChartPoint] для валидации
 @app.get("/analytics/{sensor_id}", response_model=List[schemas.ChartPoint])
