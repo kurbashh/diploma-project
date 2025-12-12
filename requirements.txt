@@ -3,5 +3,3 @@ uvicorn[standard]
 sqlalchemy
 pydantic
 requests
-psycopg2-binary
-google-cloud-storage

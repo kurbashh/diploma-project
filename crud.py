@@ -5,11 +5,11 @@ from sqlalchemy import desc
 from sqlalchemy import func, cast, Date
 from datetime import datetime, timedelta
 import models
-import schemas  # Импорт твоих моделей
-from google.cloud import storage
+import schemas
+import os
 
 
-# --- НОВЫЕ ФУНКЦИИ ДЛЯ ЭКРАНА "ДАТЧИКИ" ---
+# --- ФУНКЦИИ ДЛЯ ЭКРАНА "ДАТЧИКИ" ---
 
 def get_all_locations(db: Session) -> list[models.Location]:
     """Возвращает все локации для выпадающего списка кабинетов."""
@@ -20,7 +20,6 @@ def get_sensors_by_location(db: Session, location_id: int) -> list[models.Sensor
     Возвращает все датчики, привязанные к конкретной локации, 
     сразу подгружая тип датчика (для названия и единицы измерения).
     """
-    # Используем joinedload для SensorType, чтобы получить name и unit
     sensors = (
         db.query(models.Sensor)
         .options(joinedload(models.Sensor.sensor_type))
@@ -29,7 +28,6 @@ def get_sensors_by_location(db: Session, location_id: int) -> list[models.Sensor
     )
     return sensors
 
-# Дополнительно: функция для получения последнего значения (для оптимизации)
 def get_last_measurement(db: Session, sensor_id: int) -> Optional[models.Measurement]:
     """Получает последнее измерение для одного датчика."""
     return db.query(models.Measurement)\
@@ -37,7 +35,7 @@ def get_last_measurement(db: Session, sensor_id: int) -> Optional[models.Measure
         .order_by(models.Measurement.timestamp.desc())\
         .first()
 
-# --- 1. АНАЛИТИКА (ГРАФИКИ) ---
+# --- АНАЛИТИКА (ГРАФИКИ) ---
 def get_analytics_daily(db: Session, sensor_id: int, days: int = 7):
     start_date = datetime.utcnow() - timedelta(days=days)
     results = (
@@ -61,12 +59,11 @@ def get_analytics_daily(db: Session, sensor_id: int, days: int = 7):
         })
     return data
 
-# --- 2. ПОЛЬЗОВАТЕЛИ (ДЛЯ UI) ---
+# --- ПОЛЬЗОВАТЕЛИ (ДЛЯ UI) ---
 def get_users_for_ui(db: Session) -> list[schemas.UserListDTO]:
     users = db.query(models.User).all()
     result = []
     for u in users:
-        # Логика форматирования статуса
         status_text = "Онлайн" if u.is_online else "Оффлайн"
         
         result.append(schemas.UserListDTO(
@@ -77,11 +74,11 @@ def get_users_for_ui(db: Session) -> list[schemas.UserListDTO]:
         ))
     return result
 
-# --- 3. ИСТОРИЯ ДЕЙСТВИЙ (ДЛЯ UI) ---
+# --- ИСТОРИЯ ДЕЙСТВИЙ (ДЛЯ UI) ---
 def get_logs_for_ui(db: Session, limit: int = 20) -> list[schemas.ActionLogDTO]:
     logs = (
         db.query(models.ActionLog)
-        .options(joinedload(models.ActionLog.user)) # Оптимизация запроса
+        .options(joinedload(models.ActionLog.user))
         .order_by(desc(models.ActionLog.timestamp))
         .limit(limit)
         .all()
@@ -89,7 +86,6 @@ def get_logs_for_ui(db: Session, limit: int = 20) -> list[schemas.ActionLogDTO]:
 
     result = []
     for log in logs:
-        # Логика форматирования времени
         time_str = log.timestamp.strftime("%H:%M:%S")
         
         user_name = log.user.full_name if log.user else "Unknown"
@@ -105,7 +101,7 @@ def get_logs_for_ui(db: Session, limit: int = 20) -> list[schemas.ActionLogDTO]:
     return result
 
 
-# --- НОВАЯ ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ ОТЧЕТА ---
+# --- ФУНКЦИЯ ДЛЯ ГЕНЕРАЦИИ ОТЧЕТА ---
 
 def calculate_report_data(db: Session, start_time: datetime, end_time: datetime):
     """
@@ -113,8 +109,6 @@ def calculate_report_data(db: Session, start_time: datetime, end_time: datetime)
     Возвращает список словарей с агрегатами.
     """
     
-    # Выполняем сложный запрос для сбора статистики:
-    # Группируем по Location, SensorType и Sensor, находим MIN, MAX, AVG.
     stats = db.query(
         models.Location.name.label("location_name"),
         models.Sensor.name.label("sensor_name"),
@@ -137,7 +131,6 @@ def calculate_report_data(db: Session, start_time: datetime, end_time: datetime)
         models.SensorType.name
     ).all()
     
-    # Преобразуем результат в удобный список словарей
     report_data = []
     for row in stats:
         report_data.append({
@@ -151,31 +144,28 @@ def calculate_report_data(db: Session, start_time: datetime, end_time: datetime)
         
     return report_data
 
-def upload_to_gcs(bucket_name: str, file_path: str, content: str, content_type: str = 'text/plain; charset=utf-8'):
+def save_report_locally(file_path: str, content: str):
     """
-    Создает простой текстовый файл (заглушка PDF) и загружает его в GCS.
-    Гарантированно кодирует контент в UTF-8 для устранения Mojibake.
+    Сохраняет отчёт в локальную папку reports/.
+    Возвращает относительный путь к файлу.
     """
     try:
-        # Client() автоматически ищет учетные данные в Cloud Run.
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
+        # Создаём папку reports/, если её нет
+        os.makedirs("reports", exist_ok=True)
         
-        # Полный путь к файлу в бакете (например, reports/weekly_20251128.txt)
-        blob = bucket.blob(file_path)
+        # Полный путь к файлу
+        full_path = os.path.join("reports", file_path)
         
-        # --- КРИТИЧЕСКОЕ ИЗМЕНЕНИЕ: ЯВНОЕ КОДИРОВАНИЕ В UTF-8 ---
-        # Мы преобразуем Python-строку в байты перед загрузкой.
-        blob.upload_from_string(
-            content.encode('utf-8'), 
-            content_type=content_type
-        )
+        # Сохраняем файл с UTF-8 кодировкой
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(content)
         
-        # Возвращаем полный публичный URL для сохранения в базе данных
-        return f"https://storage.googleapis.com/{bucket_name}/{file_path}"
+        print(f"✅ Report saved: {full_path}")
+        
+        # Возвращаем путь для сохранения в БД
+        return f"/reports/{file_path}"
         
     except Exception as e:
-        # Если GCS недоступен или нет прав, вернем фиктивную ссылку
-        print(f"GCS ERROR: Failed to upload file to {bucket_name}: {e}")
-        # Возвращаем фиктивную ссылку, чтобы приложение не упало
-        return f"https://reports.microclimate.com/{file_path.split('/')[-1]}"
+        print(f"❌ ERROR: Failed to save report: {e}")
+        # Возвращаем фиктивный путь, чтобы приложение не упало
+        return f"/reports/{file_path}"

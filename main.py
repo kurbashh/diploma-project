@@ -1,17 +1,15 @@
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import datetime, timedelta
 import random
+import os
 
-# Импортируем наши модули
 import crud
 import models
 import schemas
-from database import SessionLocal, engine, Base, FORCE_SQLITE
-# Внимание: для реальной работы с GCS вам понадобится установить 
-# библиотеку google-cloud-storage и добавить ее импорт в crud.py
-# Здесь используется заглушка, которая возвращает фиктивный URL GCS.
+from database import SessionLocal, engine, Base
 
 # Создаем объект FastAPI
 app = FastAPI(title="Microclimate Monitoring API")
@@ -19,17 +17,20 @@ app = FastAPI(title="Microclimate Monitoring API")
 
 @app.on_event("startup")
 def startup_event():
-    """При локальном запуске с SQLite — автоматически создаём таблицы, если их нет.
-
-    Это полезно для разработки: не требуется запускать Alembic/миграции.
-    Чтобы включить поведение, установите `FORCE_SQLITE=1` в окружении.
-    """
+    """При запуске автоматически создаём таблицы, если их нет."""
     try:
-        if FORCE_SQLITE:
-            print("FORCE_SQLITE=1 — создаём таблицы SQLite (если их нет)")
-            Base.metadata.create_all(bind=engine)
+        print("🚀 Создаём таблицы SQLite (если их нет)")
+        Base.metadata.create_all(bind=engine)
+        
+        # Создаём папку для отчётов
+        os.makedirs("reports", exist_ok=True)
+        print("📁 Папка reports/ готова")
+        
     except Exception as e:
-        print(f"Warning: failed to create tables on startup: {e}")
+        print(f"⚠️ Warning: failed to create tables on startup: {e}")
+
+# Подключаем статические файлы для скачивания отчётов
+app.mount("/reports", StaticFiles(directory="reports"), name="reports")
 
 # --- Dependency (Подключение к БД) ---
 def get_db():
@@ -64,29 +65,21 @@ def get_sensors_by_location_id(location_id: int, db: Session = Depends(get_db)):
         current_val = last_measure.value if last_measure else 0.0
         
         # --- ЛОГИКА СИМУЛЯЦИИ (PHYSICS ENGINE) ---
-        # Если датчик включен и есть разница между целью и фактом
         if sensor.is_active and sensor.target_value is not None:
             diff = sensor.target_value - current_val
             
-            # Если разница существенная (больше 0.1)
             if abs(diff) > 0.1:
-                # Проверяем, давно ли было последнее обновление (чтобы не спамить базу при частом обновлении)
-                # Обновляем "физику" не чаще чем раз в 5 секунд
                 time_since_last = datetime.utcnow() - last_measure.timestamp if last_measure else timedelta(seconds=100)
                 
                 if time_since_last.total_seconds() > 5:
-                    # Двигаемся к цели на 10% от оставшегося пути (эффект плавного замедления)
                     step = diff * 0.1
                     
-                    # Но не меньше 0.1 градуса за раз, чтобы не застрять
                     if abs(step) < 0.1:
                         step = 0.1 if diff > 0 else -0.1
                         
-                    # Добавляем немного шума (случайности), чтобы выглядело как реальный датчик
                     noise = random.uniform(-0.05, 0.05)
                     new_val = current_val + step + noise
                     
-                    # Создаем запись в базе (будто датчик прислал данные)
                     new_measure = models.Measurement(
                         sensor_id=sensor.id,
                         location_id=sensor.location_id,
@@ -96,14 +89,10 @@ def get_sensors_by_location_id(location_id: int, db: Session = Depends(get_db)):
                     db.add(new_measure)
                     db.commit()
                     
-                    # Обновляем значение для выдачи на фронт
                     current_val = new_val
-
-        # -----------------------------------------
         
-        # Создаем экземпляр Pydantic
         sensor_data = schemas.SensorRead.from_orm(sensor)
-        sensor_data.last_value = round(current_val, 1) # Округляем для красоты
+        sensor_data.last_value = round(current_val, 1)
         result.append(sensor_data)
         
     return result
@@ -112,38 +101,30 @@ def get_sensors_by_location_id(location_id: int, db: Session = Depends(get_db)):
 def update_sensor_settings(
     sensor_id: int, 
     update_data: schemas.SensorUpdate, 
-    user_id: int = 1, # ID юзера для логов
+    user_id: int = 1,
     db: Session = Depends(get_db)
 ):
-    """
-    Управление датчиком с записью в ЛОГИ.
-    """
+    """Управление датчиком с записью в ЛОГИ."""
     sensor = db.query(models.Sensor).filter(models.Sensor.id == sensor_id).first()
     if not sensor:
         raise HTTPException(status_code=404, detail="Sensor not found")
     
     action_text = []
     
-    # ЛОГИКА ЛОГИРОВАНИЯ: Сравниваем новое значение с текущим в БД, чтобы не спамить лог.
-    
-    # 1. Логируем is_active только если новое значение отличается от старого
     if update_data.is_active is not None and update_data.is_active != sensor.is_active:
         sensor.is_active = update_data.is_active 
         status = "Включил" if update_data.is_active else "Выключил"
         action_text.append(f"{status} датчик {sensor.name}")
         
-    # 2. Логируем target_value только если оно было предоставлено и изменилось
     if update_data.target_value is not None:
         if update_data.target_value != sensor.target_value:
             sensor.target_value = update_data.target_value 
             action_text.append(f"Изменил {sensor.name} на {update_data.target_value}")
 
     if action_text:
-        # Сохраняем изменения в таблице sensors
         db.commit()
         db.refresh(sensor)
         
-        # Записываем в action_logs
         full_action_description = ", ".join(action_text)
         new_log = models.ActionLog(
             user_id=user_id,
@@ -165,9 +146,7 @@ def update_sensor_settings(
 
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(db: Session = Depends(get_db)):
-    """
-    Считает среднюю температуру и влажность, а также их процентное изменение за 24 часа.
-    """
+    """Считает среднюю температуру и влажность, а также их процентное изменение за 24 часа."""
     sensors = db.query(models.Sensor).all()
     
     cur_temp_vals = []
@@ -187,7 +166,6 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
             .first()
         
         if last_measure:
-            # Используем sensor_type.name для определения типа
             if sensor.sensor_type.name == "Temperature":
                 cur_temp_vals.append(last_measure.value)
                 if old_measure: old_temp_vals.append(old_measure.value)
@@ -242,8 +220,8 @@ def get_reports(db: Session = Depends(get_db)):
 @app.post("/api/reports/generate/{period}", status_code=status.HTTP_201_CREATED)
 def generate_report_endpoint(period: str, db: Session = Depends(get_db)):
     """
-    Инициирует генерацию отчета (недельный или месячный).
-    Эта функция будет вызываться Cloud Scheduler.
+    Генерация отчета (недельный или месячный).
+    Сохраняет файл локально в папку reports/.
     """
     end_time = datetime.utcnow()
     
@@ -262,29 +240,22 @@ def generate_report_endpoint(period: str, db: Session = Depends(get_db)):
     if not report_data:
         return {"message": f"Нет данных для создания {title_prefix.lower()} за период: {start_time.strftime('%Y-%m-%d')} - {end_time.strftime('%Y-%m-%d')}"}
 
-    # 2. Формирование содержания отчета (имитация)
+    # 2. Формирование содержания отчета
     report_content_lines = [f"{title_prefix} за период {start_time.strftime('%d.%m.%Y')} - {end_time.strftime('%d.%m.%Y')}\n"]
-    report_content_lines.append("--------------------------------------------------")
+    report_content_lines.append("=" * 60)
     for data in report_data:
         report_content_lines.append(
-            f"Локация: {data['location']} | Датчик: {data['sensor']} ({data['type']})\n"
-            f"  Среднее: {data['avg']} | Мин: {data['min']} | Макс: {data['max']}"
+            f"\nЛокация: {data['location']}\n"
+            f"Датчик: {data['sensor']} ({data['type']})\n"
+            f"  • Среднее значение: {data['avg']}\n"
+            f"  • Минимум: {data['min']}\n"
+            f"  • Максимум: {data['max']}"
         )
     report_file_content = "\n".join(report_content_lines)
     
-    # 3. Загрузка файла в GCS и получение URL
-    
-    # Полный путь в бакете
-    blob_path = f"reports/{period}_{end_time.strftime('%Y%m%d')}.txt"
-    bucket_name = 'reports-backet' # Ваш бакет
-
-    # Вызываем функцию CRUD для загрузки
-    file_url = crud.upload_to_gcs(
-        bucket_name=bucket_name,
-        file_path=blob_path,
-        content=report_file_content,
-        content_type='text/plain' # В реальной жизни было бы application/pdf
-    )
+    # 3. Сохранение файла локально
+    filename = f"{period}_{end_time.strftime('%Y%m%d_%H%M%S')}.txt"
+    file_url = crud.save_report_locally(filename, report_file_content)
     
     # 4. Сохранение метаданных отчета в БД
     report_title = f"{title_prefix} ({start_time.strftime('%d.%m')} - {end_time.strftime('%d.%m')})"
@@ -310,7 +281,7 @@ def download_report(
     user_id: int = 1, 
     db: Session = Depends(get_db)
 ):
-    """Скачать отчет с логированием"""
+    """Получить ссылку на скачивание отчета с логированием"""
     report = db.query(models.Report).filter(models.Report.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
@@ -382,7 +353,7 @@ def record_measurement(
 
 @app.post("/api/seed_data")
 def seed_database(db: Session = Depends(get_db)):
-    """Генератор данных"""
+    """Генератор тестовых данных"""
     t_temp = db.query(models.SensorType).filter(models.SensorType.name == "Temperature").first()
     if not t_temp:
         t_temp = models.SensorType(name="Temperature", unit="°C")
@@ -440,10 +411,6 @@ def seed_database(db: Session = Depends(get_db)):
     if not db.query(models.User).filter(models.User.full_name == "Kseniya Kruchina").first():
         u1 = models.User(full_name="Kseniya Kruchina", role="engineer", is_online=True, hashed_password="xhz")
         db.add(u1)
-        
-    if db.query(models.Report).count() == 0:
-        # В этом блоке мы не создаем отчеты, чтобы они не мешали автоматической генерации
-        pass
         
     db.commit()
     

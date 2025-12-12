@@ -1,0 +1,36 @@
+# Python
+venv
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Database
+*.db
+*.db-journal
+sql_app.db
+
+# Reports
+reports/
+*.txt
+*.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Git
+.git
