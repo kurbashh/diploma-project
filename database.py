@@ -14,12 +14,19 @@ DB_NAME = os.environ.get("DB_NAME")
 CLOUD_SQL_CONNECTION_NAME = os.environ.get("CLOUD_SQL_CONNECTION_NAME")
 DB_HOST = os.environ.get("DB_HOST") # <--- НОВАЯ ПЕРЕМЕННАЯ (IP адрес)
 
+# Если нужно принудительно использовать локальную SQLite (удобно для разработки),
+# установите переменную окружения `FORCE_SQLITE=1`.
+FORCE_SQLITE = os.environ.get("FORCE_SQLITE", "0") == "1"
+
 # Формируем URL подключения
 SQLALCHEMY_DATABASE_URL = ""
+if FORCE_SQLITE:
+    # Принудительное подключение к локальной SQLite (DEV)
+    SQLALCHEMY_DATABASE_URL = "sqlite:///./sql_app.db"
+    print("--- FORCE_SQLITE=1 -> Connecting to local SQLite ---")
 
-if DB_HOST:
+elif DB_HOST:
     # --- ВАРИАНТ 1: Подключение по Private IP (через VPC) ---
-    # Это то, что мы настроили с коннектором
     SQLALCHEMY_DATABASE_URL = (
         f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:5432/{DB_NAME}"
     )
@@ -27,7 +34,6 @@ if DB_HOST:
 
 elif CLOUD_SQL_CONNECTION_NAME:
     # --- ВАРИАНТ 2: Подключение через Unix Socket ---
-    # Резервный вариант, если IP не задан
     SQLALCHEMY_DATABASE_URL = (
         f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@/{DB_NAME}?host=/cloudsql/{CLOUD_SQL_CONNECTION_NAME}"
     )
@@ -40,11 +46,11 @@ else:
 
 
 # Создание движка
-if DB_HOST or CLOUD_SQL_CONNECTION_NAME:
+if not FORCE_SQLITE and (DB_HOST or CLOUD_SQL_CONNECTION_NAME):
     # Для PostgreSQL
     engine = create_engine(SQLALCHEMY_DATABASE_URL)
 else:
-    # Для SQLite
+    # Для SQLite (по умолчанию или если FORCE_SQLITE=1)
     engine = create_engine(
         SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
     )

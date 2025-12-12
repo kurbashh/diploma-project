@@ -100,7 +100,8 @@ class Notification(Base):
     is_completed = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     location_id = Column(Integer, ForeignKey("locations.id"), nullable=True) # Добавлено
-    sensor_id = Column(Integer, ForeignKey("sensors.id"), nullable=True)     # Добавлено
+    sensor_id = Column(Integer, ForeignKey("sensors.id"), nullable=True)    # Добавлено
+    required_target_value = Column(Float, nullable=True)
 
     location = relationship("Location")
 

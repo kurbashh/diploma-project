@@ -8,13 +8,28 @@ import random
 import crud
 import models
 import schemas
-from database import SessionLocal, engine 
+from database import SessionLocal, engine, Base, FORCE_SQLITE
 # Внимание: для реальной работы с GCS вам понадобится установить 
 # библиотеку google-cloud-storage и добавить ее импорт в crud.py
 # Здесь используется заглушка, которая возвращает фиктивный URL GCS.
 
 # Создаем объект FastAPI
 app = FastAPI(title="Microclimate Monitoring API")
+
+
+@app.on_event("startup")
+def startup_event():
+    """При локальном запуске с SQLite — автоматически создаём таблицы, если их нет.
+
+    Это полезно для разработки: не требуется запускать Alembic/миграции.
+    Чтобы включить поведение, установите `FORCE_SQLITE=1` в окружении.
+    """
+    try:
+        if FORCE_SQLITE:
+            print("FORCE_SQLITE=1 — создаём таблицы SQLite (если их нет)")
+            Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        print(f"Warning: failed to create tables on startup: {e}")
 
 # --- Dependency (Подключение к БД) ---
 def get_db():
