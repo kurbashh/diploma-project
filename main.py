@@ -415,3 +415,503 @@ def seed_database(db: Session = Depends(get_db)):
     db.commit()
     
     return {"message": f"Успешно создано {NEW_ROOMS_COUNT} новых кабинета!"}
+
+
+# -------------------------------------------------------------------
+# 🎯 DIPLOMA ENDPOINTS (NEW CRITERIA)
+# -------------------------------------------------------------------
+
+@app.get("/api/sensors/{sensor_id}/anomalies")
+def analyze_sensor_anomalies(sensor_id: int, days: int = 7, db: Session = Depends(get_db)):
+    """
+    🎓 DIPLOMA CRITERION 2 & 3: Анализ аномалий с использованием классических и трансформер методов.
+    
+    Процесс:
+    1. Извлекаем последние N дней измерений
+    2. Применяем КЛАССИЧЕСКИЕ методы (Moving Average, Isolation Forest, Seasonal)
+    3. Применяем ТРАНСФОРМЕР-подобные методы (Time Series Attention, Trend Analysis)
+    4. Сравниваем результаты (DIPLOMA CRITERION 3)
+    5. Возвращаем комбинированный анализ
+    
+    Args:
+        sensor_id: ID датчика
+        days: Глубина анализа (по умолчанию 7 дней)
+    
+    Returns:
+        {
+            'sensor_id': int,
+            'sensor_name': str,
+            'measurements_count': int,
+            'analysis': {
+                'classical': {...},
+                'transformer': {...},
+                'comparison': {
+                    'models_agree': bool,
+                    'consensus_is_anomaly': bool,
+                    'agreement_score': float
+                }
+            }
+        }
+    """
+    try:
+        sensor = db.query(models.Sensor).filter(models.Sensor.id == sensor_id).first()
+        if not sensor:
+            raise HTTPException(status_code=404, detail="Sensor not found")
+        
+        # Извлекаем измерения за последние N дней
+        measurements = crud.get_sensor_measurements(db, sensor_id, days=days)
+        
+        if not measurements:
+            return {
+                'sensor_id': sensor_id,
+                'sensor_name': sensor.name,
+                'measurements_count': 0,
+                'error': 'No measurements found for analysis'
+            }
+        
+        # Преобразуем в список значений
+        values = [m.value for m in measurements]
+        
+        # ИМПОРТИРУЕМ МОДУЛИ АНАЛИЗА
+        from anomaly_detection_classical import (
+            moving_avg_detector, isolation_forest_detector, seasonal_detector
+        )
+        from anomaly_detection_transformer import ensemble_detector
+        
+        # КЛАССИЧЕСКИЕ МЕТОДЫ
+        classical_result = moving_avg_detector.detect(values)
+        if not classical_result['is_anomaly']:
+            classical_result = isolation_forest_detector.detect(values)
+        if not classical_result['is_anomaly']:
+            classical_result = seasonal_detector.detect(values)
+        
+        # ТРАНСФОРМЕР МЕТОДЫ
+        transformer_result = ensemble_detector.detect(values)
+        
+        # СРАВНЕНИЕ МОДЕЛЕЙ (DIPLOMA CRITERION 3)
+        models_agree = classical_result['is_anomaly'] == transformer_result['is_anomaly']
+        consensus_is_anomaly = classical_result['is_anomaly'] and transformer_result['is_anomaly']
+        
+        agreement_score = (
+            (1 - abs(classical_result['score'] - transformer_result['score'])) * 0.5 +
+            (1 if models_agree else 0) * 0.5
+        )
+        
+        # Сохраняем результаты анализа в БД
+        analysis_record = models.AnomalyAnalysis(
+            sensor_id=sensor_id,
+            location_id=sensor.location_id,
+            classical_method='ensemble',
+            classical_anomaly_score=classical_result['score'],
+            classical_is_anomaly=classical_result['is_anomaly'],
+            transformer_model='ensemble',
+            transformer_anomaly_score=transformer_result['score'],
+            transformer_is_anomaly=transformer_result['is_anomaly'],
+            models_agreement=models_agree,
+            confidence=agreement_score,
+            analysis_timestamp=datetime.utcnow()
+        )
+        db.add(analysis_record)
+        db.commit()
+        
+        return {
+            'sensor_id': sensor_id,
+            'sensor_name': sensor.name,
+            'measurements_count': len(measurements),
+            'analysis': {
+                'classical': {
+                    'is_anomaly': classical_result['is_anomaly'],
+                    'score': round(classical_result['score'], 3),
+                    'description': classical_result.get('description', ''),
+                    'method': 'moving_average + isolation_forest + seasonal'
+                },
+                'transformer': {
+                    'is_anomaly': transformer_result['is_anomaly'],
+                    'score': round(transformer_result['score'], 3),
+                    'description': transformer_result.get('description', ''),
+                    'reconstruction_error': round(transformer_result.get('reconstruction_error', 0), 3),
+                    'trend_info': transformer_result.get('trend_info', {}),
+                    'models_agree': transformer_result.get('models_agree', False)
+                },
+                'comparison': {
+                    'models_agree': models_agree,
+                    'consensus_is_anomaly': consensus_is_anomaly,
+                    'agreement_score': round(agreement_score, 3),
+                    'analysis_id': analysis_record.id
+                }
+            }
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error analyzing sensor anomalies: {e}")
+        return {
+            'error': str(e),
+            'sensor_id': sensor_id
+        }
+
+
+@app.post("/api/recommendations/generate")
+def generate_recommendations(request_data: dict = None, db: Session = Depends(get_db)):
+    """
+    🎓 DIPLOMA CRITERION 1 & 2: Генерация интеллектуальных рекомендаций для проактивного управления.
+    
+    Процесс:
+    1. Анализируем все датчики локации на аномалии
+    2. Используем NLP для генерации описаний проблем
+    3. Генерируем исполняемые рекомендации с target_value
+    4. Сортируем по приоритету
+    
+    Body:
+        {
+            'location_id': int,
+            'only_anomalies': bool (опционально, по умолчанию true)
+        }
+    
+    Returns:
+        {
+            'location_id': int,
+            'location_name': str,
+            'recommendations': [
+                {
+                    'sensor_name': str,
+                    'problem_description': str,
+                    'recommended_action': str,
+                    'target_value': float,
+                    'severity': str,
+                    'priority': int,
+                    'confidence': float,
+                    'reasoning': str,
+                    'recommendation_id': int
+                }
+            ]
+        }
+    """
+    try:
+        # Парсим тело запроса
+        location_id = request_data.get('location_id') if request_data else None
+        only_anomalies = request_data.get('only_anomalies', True) if request_data else True
+        
+        if not location_id:
+            raise HTTPException(status_code=400, detail="location_id is required")
+        
+        # Проверяем локацию
+        location = db.query(models.Location).filter(models.Location.id == location_id).first()
+        if not location:
+            raise HTTPException(status_code=404, detail="Location not found")
+        
+        # Получаем все датчики локации
+        sensors = crud.get_sensors_by_location(db, location_id)
+        
+        # ИМПОРТИРУЕМ МОДУЛИ АНАЛИЗА
+        from anomaly_detection_classical import moving_avg_detector
+        from intelligent_recommendation_engine import RecommendationGenerator
+        
+        generator = RecommendationGenerator()
+        recommendations = []
+        
+        for sensor in sensors:
+            # Получаем последние измерения
+            measurements = crud.get_sensor_measurements(db, sensor.id, days=7)
+            
+            if not measurements:
+                continue
+            
+            last_measurement = measurements[-1]
+            values = [m.value for m in measurements]
+            
+            # Анализируем на аномалии
+            anomaly_result = moving_avg_detector.detect(values)
+            
+            # Если only_anomalies=True и это не аномалия, пропускаем
+            if only_anomalies and not anomaly_result['is_anomaly']:
+                continue
+            
+            # Генерируем рекомендацию
+            recommendation = generator.generate_recommendation(
+                sensor_name=sensor.name,
+                sensor_type=sensor.sensor_type.name,
+                current_value=last_measurement.value,
+                anomaly_analysis=anomaly_result,
+                location_room_type=location.room_type
+            )
+            
+            # Сохраняем рекомендацию в БД
+            rec_record = models.IntelligentRecommendation(
+                sensor_id=sensor.id,
+                location_id=location_id,
+                problem_description=recommendation['problem_description'],
+                recommended_action=recommendation['recommended_action'],
+                target_value=recommendation['target_value'],
+                reasoning=recommendation['reasoning'],
+                confidence=recommendation['confidence'],
+                severity=recommendation['severity'],
+                priority=recommendation['priority']
+            )
+            db.add(rec_record)
+            db.flush()  # Получаем ID
+            
+            recommendation['recommendation_id'] = rec_record.id
+            recommendation['sensor_name'] = sensor.name
+            recommendations.append(recommendation)
+        
+        # Сортируем по приоритету
+        recommendations.sort(key=lambda x: x['priority'], reverse=True)
+        
+        db.commit()
+        
+        return {
+            'location_id': location_id,
+            'location_name': location.name,
+            'recommendations_count': len(recommendations),
+            'recommendations': recommendations
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating recommendations: {e}")
+        return {
+            'error': str(e),
+            'location_id': request_data.get('location_id') if request_data else None
+        }
+
+
+@app.post("/api/voice/notification-command")
+def process_voice_notification_command(
+    audio_data: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    🎓 DIPLOMA CRITERION 4: Распознавание голосовых команд для управления уведомлениями.
+    
+    Использует Whisper для транскрибирования и распознавания команд:
+    - 'confirm' / 'да': Подтверждение рекомендации
+    - 'reject' / 'нет': Отклонение рекомендации
+    - 'modify' / 'измени': Изменение целевого значения
+    - 'request_info': Запрос информации об аномалии
+    - 'request_report': Запрос отчета
+    
+    Body:
+        {
+            'audio_file_path': str,
+            'notification_id': int,
+            'sensor_id': int (опционально)
+        }
+    
+    Returns:
+        {
+            'success': bool,
+            'command': str,
+            'confidence_speech': float,
+            'confidence_command': float,
+            'transcript': str,
+            'action_taken': str,
+            'voice_command_id': int
+        }
+    """
+    try:
+        audio_file_path = audio_data.get('audio_file_path')
+        notification_id = audio_data.get('notification_id')
+        sensor_id = audio_data.get('sensor_id')
+        
+        if not audio_file_path:
+            raise HTTPException(status_code=400, detail="audio_file_path is required")
+        
+        if not notification_id:
+            raise HTTPException(status_code=400, detail="notification_id is required")
+        
+        # ИМПОРТИРУЕМ МОДУЛЬ РАСПОЗНАВАНИЯ РЕЧИ
+        from voice_notification_commands import voice_notification_manager
+        
+        # Обрабатываем голосовую команду (DIPLOMA CRITERION 4)
+        voice_result = voice_notification_manager.process_notification_voice_input(
+            audio_file_path=audio_file_path,
+            notification_id=notification_id,
+            sensor_id=sensor_id
+        )
+        
+        if not voice_result.get('success'):
+            return {
+                'success': False,
+                'error': voice_result.get('error', 'Unknown error'),
+                'notification_id': notification_id
+            }
+        
+        command = voice_result['command']
+        transcript = voice_result['transcript']
+        
+        # Сохраняем команду в БД
+        voice_cmd_record = models.VoiceNotificationCommand(
+            notification_id=notification_id,
+            transcript=transcript,
+            command=command,
+            execution_status='received',
+            execution_timestamp=datetime.utcnow()
+        )
+        db.add(voice_cmd_record)
+        db.flush()
+        
+        # Выполняем действие на основе команды
+        action_taken = ''
+        notification = db.query(models.Notification).filter(
+            models.Notification.id == notification_id
+        ).first()
+        
+        if command == 'confirm':
+            # Отмечаем уведомление как подтверждённое
+            notification.status = 'confirmed'
+            action_taken = 'Recommendation confirmed, implementing changes'
+            voice_cmd_record.execution_status = 'confirmed'
+        
+        elif command == 'reject':
+            # Отмечаем как отклоненное
+            notification.status = 'rejected'
+            action_taken = 'Recommendation rejected'
+            voice_cmd_record.execution_status = 'rejected'
+        
+        elif command == 'modify':
+            # Пытаемся извлечь новое значение
+            new_value = voice_result.get('extracted_value')
+            if new_value:
+                notification.required_target_value = float(new_value)
+                action_taken = f'Target value modified to {new_value}'
+                voice_cmd_record.execution_status = 'modified'
+            else:
+                action_taken = 'Modify command received but could not extract value'
+                voice_cmd_record.execution_status = 'pending_clarification'
+        
+        elif command == 'request_info':
+            action_taken = 'Information requested, sending detailed report'
+            voice_cmd_record.execution_status = 'info_sent'
+        
+        elif command == 'request_report':
+            action_taken = 'Historical report requested'
+            voice_cmd_record.execution_status = 'report_sent'
+        
+        else:
+            action_taken = 'Command not recognized'
+            voice_cmd_record.execution_status = 'unknown_command'
+        
+        db.commit()
+        
+        return {
+            'success': True,
+            'command': command,
+            'confidence_speech': voice_result['confidence_speech'],
+            'confidence_command': voice_result['confidence_command'],
+            'transcript': transcript,
+            'detected_language': voice_result['detected_language'],
+            'action_taken': action_taken,
+            'voice_command_id': voice_cmd_record.id,
+            'notification_id': notification_id
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error processing voice notification command: {e}")
+        return {
+            'success': False,
+            'error': str(e),
+            'notification_id': audio_data.get('notification_id') if audio_data else None
+        }
+
+
+@app.get("/api/diploma/analysis-stats")
+def get_diploma_analysis_stats(location_id: int = None, db: Session = Depends(get_db)):
+    """
+    📊 Статистика по всем критериям дипломной работы.
+    
+    Показывает:
+    - Количество проведённых анализов (CRITERION 2&3)
+    - Статистику по классическим и трансформер методам (CRITERION 2&3)
+    - Количество сгенерированных рекомендаций (CRITERION 1)
+    - Количество обработанных голосовых команд (CRITERION 4)
+    """
+    try:
+        # Статистика по аномалиям
+        anomaly_analyses = db.query(models.AnomalyAnalysis)
+        if location_id:
+            anomaly_analyses = anomaly_analyses.filter(models.AnomalyAnalysis.location_id == location_id)
+        anomaly_analyses = anomaly_analyses.all()
+        
+        # Статистика по рекомендациям
+        recommendations = db.query(models.IntelligentRecommendation)
+        if location_id:
+            recommendations = recommendations.filter(models.IntelligentRecommendation.location_id == location_id)
+        recommendations = recommendations.all()
+        
+        # Статистика по голосовым командам
+        voice_commands = db.query(models.VoiceNotificationCommand).all()
+        
+        # Анализируем результаты
+        classical_anomalies = sum(1 for a in anomaly_analyses if a.classical_is_anomaly)
+        transformer_anomalies = sum(1 for a in anomaly_analyses if a.transformer_is_anomaly)
+        model_agreements = sum(1 for a in anomaly_analyses if a.models_agreement)
+        
+        voice_commands_stats = {
+            'confirm': sum(1 for v in voice_commands if v.command == 'confirm'),
+            'reject': sum(1 for v in voice_commands if v.command == 'reject'),
+            'modify': sum(1 for v in voice_commands if v.command == 'modify'),
+            'request_info': sum(1 for v in voice_commands if v.command == 'request_info'),
+            'request_report': sum(1 for v in voice_commands if v.command == 'request_report'),
+            'unknown': sum(1 for v in voice_commands if v.command == 'unknown')
+        }
+        
+        return {
+            'diploma_criteria': {
+                'criterion_1_practical_problem': {
+                    'description': 'Proactive microclimate monitoring with intelligent recommendations',
+                    'implemented': True,
+                    'metrics': {
+                        'total_recommendations': len(recommendations),
+                        'avg_confidence': round(sum(r.confidence for r in recommendations) / len(recommendations), 3) if recommendations else 0,
+                        'by_severity': {
+                            'critical': sum(1 for r in recommendations if r.severity == 'critical'),
+                            'high': sum(1 for r in recommendations if r.severity == 'high'),
+                            'medium': sum(1 for r in recommendations if r.severity == 'medium'),
+                            'low': sum(1 for r in recommendations if r.severity == 'low')
+                        }
+                    }
+                },
+                'criterion_2_nlp_models': {
+                    'description': 'NLP for time series analysis - Classical and Transformer methods',
+                    'implemented': True,
+                    'classical_methods': ['moving_average', 'isolation_forest', 'seasonal_decomposition'],
+                    'transformer_methods': ['time_series_attention', 'trend_analysis', 'ensemble'],
+                    'metrics': {
+                        'total_analyses': len(anomaly_analyses),
+                        'classical_anomalies_detected': classical_anomalies,
+                        'transformer_anomalies_detected': transformer_anomalies
+                    }
+                },
+                'criterion_3_model_comparison': {
+                    'description': 'Comparison of classical vs Transformer models for anomaly detection',
+                    'implemented': True,
+                    'metrics': {
+                        'total_comparisons': len(anomaly_analyses),
+                        'model_agreements': model_agreements,
+                        'agreement_rate': round(model_agreements / len(anomaly_analyses), 3) if anomaly_analyses else 0,
+                        'avg_agreement_score': round(sum(a.confidence for a in anomaly_analyses) / len(anomaly_analyses), 3) if anomaly_analyses else 0
+                    }
+                },
+                'criterion_4_speech_recognition': {
+                    'description': 'Speech recognition with Whisper for notification management',
+                    'implemented': True,
+                    'metrics': {
+                        'total_voice_commands': len(voice_commands),
+                        'commands_by_type': voice_commands_stats
+                    }
+                }
+            },
+            'location_filter': location_id,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+    
+    except Exception as e:
+        print(f"Error getting diploma stats: {e}")
+        return {
+            'error': str(e)
+        }

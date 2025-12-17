@@ -114,3 +114,109 @@ class Report(Base):
     title = Column(String, nullable=False)
     file_path = Column(String, nullable=False)
     report_date = Column(DateTime, default=datetime.utcnow)
+
+
+# --- 6. АНАЛИЗ АНОМАЛИЙ (Для интеллектуальной диагностики) ---
+
+class AnomalyAnalysis(Base):
+    """
+    Результаты анализа аномалий в данных датчиков.
+    Использует классические и Transformer методы для выделения аномалий.
+    """
+    __tablename__ = "anomaly_analyses"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    sensor_id = Column(Integer, ForeignKey("sensors.id"), nullable=False)
+    location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
+    
+    # Данные для анализа
+    analysis_period_start = Column(DateTime)  # Начало периода анализа
+    analysis_period_end = Column(DateTime)    # Конец периода анализа
+    
+    # Результаты классического анализа (статистический)
+    classical_method = Column(String)  # Метод (moving_average, std_dev, seasonal_decompose)
+    classical_anomaly_score = Column(Float)  # Оценка аномалии 0-1
+    classical_is_anomaly = Column(Boolean)  # Это ли аномалия?
+    classical_description = Column(String)  # Описание аномалии
+    
+    # Результаты Transformer анализа (нейросетевой)
+    transformer_model = Column(String)  # Название модели
+    transformer_anomaly_score = Column(Float)  # Оценка аномалии 0-1
+    transformer_is_anomaly = Column(Boolean)
+    transformer_description = Column(String)
+    
+    # Метрики сравнения
+    models_agreement = Column(Boolean)  # Согласны ли модели?
+    confidence = Column(Float)  # Уверенность в результате
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    sensor = relationship("Sensor")
+    location = relationship("Location")
+
+
+# --- 7. ИНТЕЛЛЕКТУАЛЬНЫЕ РЕКОМЕНДАЦИИ ---
+
+class IntelligentRecommendation(Base):
+    """
+    Интеллектуальные рекомендации по коррекции микроклимата.
+    Генерируются на основе анализа аномалий.
+    """
+    __tablename__ = "intelligent_recommendations"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    anomaly_analysis_id = Column(Integer, ForeignKey("anomaly_analyses.id"), nullable=False)
+    sensor_id = Column(Integer, ForeignKey("sensors.id"), nullable=False)
+    location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
+    
+    # Рекомендация
+    problem_description = Column(String)  # Описание проблемы
+    recommended_action = Column(String)   # Рекомендуемое действие
+    target_value = Column(Float)  # Целевое значение параметра
+    
+    # Обоснование
+    reasoning = Column(String)  # Объяснение почему эта рекомендация
+    confidence = Column(Float)  # Уверенность в рекомендации 0-1
+    
+    # Статус выполнения (интеграция с уведомлением)
+    notification_id = Column(Integer, ForeignKey("notifications.id"), nullable=True)
+    is_implemented = Column(Boolean, default=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    implemented_at = Column(DateTime, nullable=True)
+    
+    anomaly = relationship("AnomalyAnalysis")
+    sensor = relationship("Sensor")
+    location = relationship("Location")
+    notification = relationship("Notification")
+
+
+# --- 8. ГОЛОСОВЫЕ КОМАНДЫ (Для управления уведомлениями) ---
+
+class VoiceNotificationCommand(Base):
+    """
+    История голосовых команд для подтверждения или отклонения уведомлений.
+    """
+    __tablename__ = "voice_notification_commands"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    notification_id = Column(Integer, ForeignKey("notifications.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    
+    # Распознанная речь
+    transcript = Column(String, nullable=False)
+    detected_language = Column(String, default='en')
+    speech_confidence = Column(Float)
+    
+    # Интерпретированная команда
+    command = Column(String)  # 'confirm', 'reject', 'modify', 'request_report'
+    command_confidence = Column(Float)
+    
+    # Результат
+    execution_status = Column(String, default='pending')  # 'success', 'failed'
+    executed_at = Column(DateTime, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    notification = relationship("Notification")
+    user = relationship("User")

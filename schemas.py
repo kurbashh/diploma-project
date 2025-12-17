@@ -130,3 +130,79 @@ class LocationRead(BaseModel):
     name: str # Название кабинета/склада
     class Config:
         from_attributes = True
+
+
+# --- 6. АНАЛИЗ АНОМАЛИЙ ---
+
+class AnomalyAnalysisBase(BaseModel):
+    sensor_id: int
+    location_id: int
+    classical_method: str
+    classical_anomaly_score: float
+    classical_is_anomaly: bool
+    transformer_model: str
+    transformer_anomaly_score: float
+    transformer_is_anomaly: bool
+
+class AnomalyAnalysisRead(AnomalyAnalysisBase):
+    id: int
+    models_agreement: bool
+    confidence: float
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+# --- 7. ИНТЕЛЛЕКТУАЛЬНЫЕ РЕКОМЕНДАЦИИ ---
+
+class IntelligentRecommendationBase(BaseModel):
+    sensor_id: int
+    location_id: int
+    problem_description: str
+    recommended_action: str
+    target_value: float
+    reasoning: str
+    confidence: float
+
+class IntelligentRecommendationCreate(IntelligentRecommendationBase):
+    anomaly_analysis_id: int
+
+class IntelligentRecommendationRead(IntelligentRecommendationBase):
+    id: int
+    is_implemented: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class RecommendationWithStatus(IntelligentRecommendationRead):
+    """DTO с полной информацией для фронтенда"""
+    sensor_name: Optional[str] = None
+    sensor_type: Optional[str] = None
+    location_name: Optional[str] = None
+    notification_id: Optional[int] = None
+
+
+# --- 8. ГОЛОСОВЫЕ КОМАНДЫ ДЛЯ УВЕДОМЛЕНИЙ ---
+
+class VoiceNotificationCommandBase(BaseModel):
+    transcript: str
+    detected_language: str = 'en'
+    speech_confidence: float
+    command: str
+    command_confidence: float
+
+class VoiceNotificationCommandCreate(VoiceNotificationCommandBase):
+    notification_id: int
+    user_id: Optional[int] = None
+
+class VoiceNotificationCommandRead(VoiceNotificationCommandBase):
+    id: int
+    notification_id: int
+    execution_status: str
+    created_at: datetime
+    executed_at: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True

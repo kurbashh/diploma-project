@@ -169,3 +169,255 @@ def save_report_locally(file_path: str, content: str):
         print(f"❌ ERROR: Failed to save report: {e}")
         # Возвращаем фиктивный путь, чтобы приложение не упало
         return f"/reports/{file_path}"
+
+
+
+def execute_voice_command(db: Session, command_id: int, 
+                         status: str, note: str = None) -> models.VoiceCommand:
+    """Обновляет статус выполнения команды"""
+    command = db.query(models.VoiceCommand).filter(
+        models.VoiceCommand.id == command_id
+    ).first()
+    
+    if command:
+        command.execution_status = status
+        command.execution_note = note
+        command.executed_at = datetime.utcnow()
+        db.commit()
+        db.refresh(command)
+    
+    return command
+
+
+# -------------------------------------------------------------------
+# 🔬 DIPLOMA CRITERIA CRUD FUNCTIONS
+# -------------------------------------------------------------------
+
+def get_sensor_measurements(db: Session, sensor_id: int, days: int = 7) -> list[models.Measurement]:
+    """
+    Получает все измерения датчика за последние N дней.
+    Используется для анализа аномалий и генерации рекомендаций.
+    
+    Args:
+        db: Сессия БД
+        sensor_id: ID датчика
+        days: Глубина анализа в днях
+    
+    Returns:
+        Список измерений отсортированных по времени
+    """
+    start_date = datetime.utcnow() - timedelta(days=days)
+    measurements = (
+        db.query(models.Measurement)
+        .filter(
+            models.Measurement.sensor_id == sensor_id,
+            models.Measurement.timestamp >= start_date
+        )
+        .order_by(models.Measurement.timestamp.asc())
+        .all()
+    )
+    return measurements
+
+
+def create_anomaly_analysis(db: Session, 
+                           sensor_id: int,
+                           location_id: int,
+                           classical_method: str,
+                           classical_score: float,
+                           classical_is_anomaly: bool,
+                           transformer_model: str,
+                           transformer_score: float,
+                           transformer_is_anomaly: bool,
+                           models_agreement: bool,
+                           confidence: float) -> models.AnomalyAnalysis:
+    """
+    Сохраняет результаты анализа аномалий (DIPLOMA CRITERION 2&3).
+    
+    Args:
+        db: Сессия БД
+        sensor_id: ID датчика
+        location_id: ID локации
+        classical_method: Название классического метода
+        classical_score: Оценка аномалии классическим методом (0-1)
+        classical_is_anomaly: Является ли аномалией по классическому методу
+        transformer_model: Название трансформер модели
+        transformer_score: Оценка аномалии трансформер методом (0-1)
+        transformer_is_anomaly: Является ли аномалией по трансформер методу
+        models_agreement: Согласны ли модели в результате
+        confidence: Общая уверенность в анализе (0-1)
+    
+    Returns:
+        Созданный объект AnomalyAnalysis
+    """
+    analysis = models.AnomalyAnalysis(
+        sensor_id=sensor_id,
+        location_id=location_id,
+        classical_method=classical_method,
+        classical_anomaly_score=classical_score,
+        classical_is_anomaly=classical_is_anomaly,
+        transformer_model=transformer_model,
+        transformer_anomaly_score=transformer_score,
+        transformer_is_anomaly=transformer_is_anomaly,
+        models_agreement=models_agreement,
+        confidence=confidence,
+        analysis_timestamp=datetime.utcnow()
+    )
+    db.add(analysis)
+    db.commit()
+    db.refresh(analysis)
+    return analysis
+
+
+def get_anomaly_analyses(db: Session, 
+                        location_id: int = None,
+                        limit: int = 50) -> list[models.AnomalyAnalysis]:
+    """
+    Получает результаты анализа аномалий (DIPLOMA CRITERION 2&3).
+    
+    Args:
+        db: Сессия БД
+        location_id: Фильтр по локации (опционально)
+        limit: Максимум результатов
+    
+    Returns:
+        Список анализов отсортированных по времени (новые первыми)
+    """
+    query = db.query(models.AnomalyAnalysis)
+    
+    if location_id:
+        query = query.filter(models.AnomalyAnalysis.location_id == location_id)
+    
+    analyses = query.order_by(models.AnomalyAnalysis.analysis_timestamp.desc()).limit(limit).all()
+    return analyses
+
+
+def create_intelligent_recommendation(db: Session,
+                                      sensor_id: int,
+                                      location_id: int,
+                                      problem_description: str,
+                                      recommended_action: str,
+                                      target_value: float,
+                                      reasoning: str,
+                                      confidence: float,
+                                      severity: str,
+                                      priority: int) -> models.IntelligentRecommendation:
+    """
+    Сохраняет сгенерированную рекомендацию (DIPLOMA CRITERION 1).
+    
+    Args:
+        db: Сессия БД
+        sensor_id: ID датчика
+        location_id: ID локации
+        problem_description: Описание проблемы (NLP generated)
+        recommended_action: Рекомендуемое действие
+        target_value: Целевое значение для датчика (CRITICAL для auto-verification)
+        reasoning: Объяснение рекомендации
+        confidence: Уверенность в рекомендации (0-1)
+        severity: Уровень серьёзности (low, medium, high, critical)
+        priority: Приоритет (1-5, где 5 - наивысший)
+    
+    Returns:
+        Созданный объект IntelligentRecommendation
+    """
+    recommendation = models.IntelligentRecommendation(
+        sensor_id=sensor_id,
+        location_id=location_id,
+        problem_description=problem_description,
+        recommended_action=recommended_action,
+        target_value=target_value,
+        reasoning=reasoning,
+        confidence=confidence,
+        severity=severity,
+        priority=priority,
+        created_at=datetime.utcnow()
+    )
+    db.add(recommendation)
+    db.commit()
+    db.refresh(recommendation)
+    return recommendation
+
+
+def get_intelligent_recommendations(db: Session,
+                                   location_id: int = None,
+                                   sensor_id: int = None,
+                                   limit: int = 50) -> list[models.IntelligentRecommendation]:
+    """
+    Получает интеллектуальные рекомендации (DIPLOMA CRITERION 1).
+    
+    Args:
+        db: Сессия БД
+        location_id: Фильтр по локации (опционально)
+        sensor_id: Фильтр по датчику (опционально)
+        limit: Максимум результатов
+    
+    Returns:
+        Список рекомендаций отсортированных по приоритету
+    """
+    query = db.query(models.IntelligentRecommendation)
+    
+    if location_id:
+        query = query.filter(models.IntelligentRecommendation.location_id == location_id)
+    
+    if sensor_id:
+        query = query.filter(models.IntelligentRecommendation.sensor_id == sensor_id)
+    
+    recommendations = query.order_by(
+        models.IntelligentRecommendation.priority.desc(),
+        models.IntelligentRecommendation.created_at.desc()
+    ).limit(limit).all()
+    
+    return recommendations
+
+
+def create_voice_notification_command(db: Session,
+                                      notification_id: int,
+                                      transcript: str,
+                                      command: str,
+                                      execution_status: str = 'received') -> models.VoiceNotificationCommand:
+    """
+    Сохраняет голосовую команду для управления уведомлением (DIPLOMA CRITERION 4).
+    
+    Args:
+        db: Сессия БД
+        notification_id: ID уведомления
+        transcript: Распознанный текст
+        command: Тип команды (confirm, reject, modify, request_info, request_report, unknown)
+        execution_status: Статус выполнения команды
+    
+    Returns:
+        Созданный объект VoiceNotificationCommand
+    """
+    voice_cmd = models.VoiceNotificationCommand(
+        notification_id=notification_id,
+        transcript=transcript,
+        command=command,
+        execution_status=execution_status,
+        execution_timestamp=datetime.utcnow()
+    )
+    db.add(voice_cmd)
+    db.commit()
+    db.refresh(voice_cmd)
+    return voice_cmd
+
+
+def get_voice_notification_commands(db: Session,
+                                    notification_id: int = None,
+                                    limit: int = 50) -> list[models.VoiceNotificationCommand]:
+    """
+    Получает голосовые команды для уведомлений (DIPLOMA CRITERION 4).
+    
+    Args:
+        db: Сессия БД
+        notification_id: Фильтр по уведомлению (опционально)
+        limit: Максимум результатов
+    
+    Returns:
+        Список команд отсортированных по времени (новые первыми)
+    """
+    query = db.query(models.VoiceNotificationCommand)
+    
+    if notification_id:
+        query = query.filter(models.VoiceNotificationCommand.notification_id == notification_id)
+    
+    commands = query.order_by(models.VoiceNotificationCommand.execution_timestamp.desc()).limit(limit).all()
+    return commands

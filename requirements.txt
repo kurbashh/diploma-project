@@ -3,3 +3,27 @@ uvicorn[standard]
 sqlalchemy
 pydantic
 requests
+
+# NLP и обработка текста
+transformers>=4.30.0
+torch>=2.0.0
+scikit-learn>=1.4.0
+nltk>=3.8.1
+textblob>=0.17.1
+vaderSentiment>=3.3.2
+
+# Распознавание и синтез речи
+openai>=1.0.0
+pydub>=0.25.1
+librosa>=0.10.0
+soundfile>=0.12.1
+
+# Дополнительные утилиты
+numpy>=1.24.0
+pandas>=2.0.0
+matplotlib>=3.8.0
+seaborn>=0.12.0
+jupyter>=1.0.0
+ipython>=8.0.0
+python-multipart==0.0.6
+python-dotenv==1.0.0

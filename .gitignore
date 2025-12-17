@@ -1,36 +1,89 @@
 # Python
 venv
 .venv
-__pycache__
+diploma_venv
+env
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env.bak/
+venv.bak/
 
 # Database
 *.db
 *.db-journal
 sql_app.db
+*.sqlite
+*.sqlite3
 
-# Reports
+# Reports & outputs
 reports/
 *.txt
 *.pdf
+*.log
+logs/
 
-# IDE
+# IDE & Editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
+*.sublime-project
+*.sublime-workspace
 .DS_Store
 Thumbs.db
 
-# Environment
+# Environment variables
 .env
 .env.local
+.env.*.local
+
+# Dependencies
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# OSX
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+*.lnk
+$RECYCLE.BIN/
 
 # Git
 .git
+.gitignore
