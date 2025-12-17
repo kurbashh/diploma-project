@@ -35,6 +35,7 @@ class Location(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
+    room_type = Column(String, default='office')  # server_room, data_center, laboratory, office, production
 
     sensors = relationship("Sensor", back_populates="location")
     measurements = relationship("Measurement", back_populates="location")
@@ -165,7 +166,9 @@ class IntelligentRecommendation(Base):
     __tablename__ = "intelligent_recommendations"
     
     id = Column(Integer, primary_key=True, index=True)
-    anomaly_analysis_id = Column(Integer, ForeignKey("anomaly_analyses.id"), nullable=False)
+    # ИСПРАВЛЕНИЕ: Делаем поле опциональным, чтобы не возникала NOT NULL ошибка, 
+    # если рекомендация создается напрямую без AnomalyAnalysis.
+    anomaly_analysis_id = Column(Integer, ForeignKey("anomaly_analyses.id"), nullable=True) 
     sensor_id = Column(Integer, ForeignKey("sensors.id"), nullable=False)
     location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
     
@@ -177,6 +180,8 @@ class IntelligentRecommendation(Base):
     # Обоснование
     reasoning = Column(String)  # Объяснение почему эта рекомендация
     confidence = Column(Float)  # Уверенность в рекомендации 0-1
+    severity = Column(String, default='low')  # low, medium, high, critical
+    priority = Column(Integer, default=1)  # 1-5, где 5 = критично
     
     # Статус выполнения (интеграция с уведомлением)
     notification_id = Column(Integer, ForeignKey("notifications.id"), nullable=True)

@@ -128,6 +128,7 @@ class ReportRead(BaseModel):
 class LocationRead(BaseModel):
     id: int
     name: str # Название кабинета/склада
+    room_type: str = 'office'  # server_room, data_center, laboratory, office, production
     class Config:
         from_attributes = True
 

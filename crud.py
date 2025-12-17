@@ -173,15 +173,16 @@ def save_report_locally(file_path: str, content: str):
 
 
 def execute_voice_command(db: Session, command_id: int, 
-                         status: str, note: str = None) -> models.VoiceCommand:
+                         status: str, note: str = None) -> models.VoiceNotificationCommand:
     """Обновляет статус выполнения команды"""
-    command = db.query(models.VoiceCommand).filter(
-        models.VoiceCommand.id == command_id
+    command = db.query(models.VoiceNotificationCommand).filter(
+        models.VoiceNotificationCommand.id == command_id
     ).first()
     
     if command:
         command.execution_status = status
-        command.execution_note = note
+        # Note, you need to add execution_note to models.VoiceNotificationCommand if you want to use it
+        # command.execution_note = note
         command.executed_at = datetime.utcnow()
         db.commit()
         db.refresh(command)
@@ -260,7 +261,7 @@ def create_anomaly_analysis(db: Session,
         transformer_is_anomaly=transformer_is_anomaly,
         models_agreement=models_agreement,
         confidence=confidence,
-        analysis_timestamp=datetime.utcnow()
+        # analysis_timestamp=datetime.utcnow() - У вас нет такого поля в models.py
     )
     db.add(analysis)
     db.commit()
@@ -287,7 +288,8 @@ def get_anomaly_analyses(db: Session,
     if location_id:
         query = query.filter(models.AnomalyAnalysis.location_id == location_id)
     
-    analyses = query.order_by(models.AnomalyAnalysis.analysis_timestamp.desc()).limit(limit).all()
+    # Сортировка по полю created_at
+    analyses = query.order_by(models.AnomalyAnalysis.created_at.desc()).limit(limit).all()
     return analyses
 
 
@@ -300,7 +302,9 @@ def create_intelligent_recommendation(db: Session,
                                       reasoning: str,
                                       confidence: float,
                                       severity: str,
-                                      priority: int) -> models.IntelligentRecommendation:
+                                      priority: int,
+                                      # ИСПРАВЛЕНИЕ: Делаем опциональным
+                                      anomaly_analysis_id: Optional[int] = None) -> models.IntelligentRecommendation:
     """
     Сохраняет сгенерированную рекомендацию (DIPLOMA CRITERION 1).
     
@@ -315,6 +319,7 @@ def create_intelligent_recommendation(db: Session,
         confidence: Уверенность в рекомендации (0-1)
         severity: Уровень серьёзности (low, medium, high, critical)
         priority: Приоритет (1-5, где 5 - наивысший)
+        anomaly_analysis_id: ID родительского анализа (теперь опционально)
     
     Returns:
         Созданный объект IntelligentRecommendation
@@ -329,6 +334,7 @@ def create_intelligent_recommendation(db: Session,
         confidence=confidence,
         severity=severity,
         priority=priority,
+        anomaly_analysis_id=anomaly_analysis_id, # Передаем None, если не задан
         created_at=datetime.utcnow()
     )
     db.add(recommendation)
@@ -392,7 +398,7 @@ def create_voice_notification_command(db: Session,
         transcript=transcript,
         command=command,
         execution_status=execution_status,
-        execution_timestamp=datetime.utcnow()
+        # execution_timestamp=datetime.utcnow() - Этого поля нет в models.VoiceNotificationCommand, используем created_at
     )
     db.add(voice_cmd)
     db.commit()
@@ -419,5 +425,6 @@ def get_voice_notification_commands(db: Session,
     if notification_id:
         query = query.filter(models.VoiceNotificationCommand.notification_id == notification_id)
     
-    commands = query.order_by(models.VoiceNotificationCommand.execution_timestamp.desc()).limit(limit).all()
+    # Сортировка по полю created_at
+    commands = query.order_by(models.VoiceNotificationCommand.created_at.desc()).limit(limit).all()
     return commands
